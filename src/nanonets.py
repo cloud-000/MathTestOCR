@@ -18,7 +18,9 @@ from . import config
 from .anchors import _match_marker
 
 # <img ...>desc</img>  or self-closing <img .../>
-_IMG_RE = re.compile(r"<img\b[^>]*>(.*?)</img>|<img\b[^>]*/?>", re.IGNORECASE | re.DOTALL)
+_IMG_RE = re.compile(
+    r"<img\b[^>]*>(.*?)</img>|<img\b[^>]*/?>", re.IGNORECASE | re.DOTALL
+)
 # Structural HTML that wraps layout/data tables -- flattened to line breaks.
 _TABLE_TAG_RE = re.compile(r"</?(?:table|thead|tbody|tr|td|th)\b[^>]*>", re.IGNORECASE)
 # Page furniture the prompt asks the model to tag.
@@ -28,12 +30,53 @@ _FURNITURE_RE = re.compile(
 )
 _POINTS_ONLY_RE = re.compile(r"^\(\s*\d+\s*\)$")  # "(1)" point-value cells
 _BLANK_RUN_RE = re.compile(r"_{2,}")  # answer blanks: "________"
+# MATHCOUNTS answer line: after the problem number comes a blank to fill plus an
+# optional unit ("26. ____ cm In the figure..."). Strip the blank and any
+# lowercase unit words so they don't lead the statement (which starts uppercase).
+_ANSWER_BLANK_RE = re.compile(r"^_{2,}\s*(?:[a-z]+\s+)*")
+
+# Chars that legitimately repeat in layout (answer blanks, dotted leaders, rules).
+# A tail made only of these is filler, not a generation loop.
+_FILLER_CHARS = set("_ .-—–·•\t\n")
+
+
+def _is_runaway(text: str) -> bool:
+    """True if the tail of `text` is a verbatim loop (degenerate generation).
+
+    The Nanonets model can get stuck endlessly re-describing a figure
+    ("The numbers 24, A-1 ... are written in the dodecagons." x N). We catch it
+    by checking whether the final probe-sized slice recurs several times within
+    the recent window. Filler-only tails (rows of underscores/dots) are ignored.
+    """
+    tail = text[-config.NANONETS_REPEAT_WINDOW :]
+    probe = tail[-config.NANONETS_REPEAT_PROBE :]
+    if len(probe) < config.NANONETS_REPEAT_PROBE or set(probe) <= _FILLER_CHARS:
+        return False
+    return tail.count(probe) >= config.NANONETS_REPEAT_COUNT
+
+
+def _close_dangling_img(text: str) -> str:
+    """Repair an ``<img>`` left unterminated by a truncated/aborted stream.
+
+    The image description is never used (DETR supplies crops by reading-order
+    ordinal), so we drop the partial text and leave a clean empty
+    ``<img></img>`` -- the positional marker survives and still maps to its crop.
+    """
+    idx = text.rfind("<img")
+    if idx == -1:
+        return text
+    tail = text[idx:]
+    if "</img>" in tail.lower() or re.match(r"<img\b[^>]*/>", tail, re.IGNORECASE):
+        return text  # properly closed or self-closing
+    return text[:idx] + "<img></img>"
 
 
 class NanonetsClient:
     """Wrapper around the OpenAI-compatible Nanonets-OCR endpoint."""
 
-    def __init__(self, base_url: str = config.NANONETS_BASE_URL, model=config.NANONETS_MODEL):
+    def __init__(
+        self, base_url: str = config.NANONETS_BASE_URL, model=config.NANONETS_MODEL
+    ):
         from openai import OpenAI
 
         self._client = OpenAI(base_url=base_url, api_key="not-needed")
@@ -53,7 +96,8 @@ class NanonetsClient:
         url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
         resp = self._client.chat.completions.create(
             model=self.model,
-            temperature=0,
+            temperature=0,  # greedy: deterministic, faithful transcription
+            max_tokens=config.NANONETS_MAX_TOKENS,
             messages=[
                 {
                     "role": "user",
@@ -63,8 +107,26 @@ class NanonetsClient:
                     ],
                 }
             ],
+            stream=True,
         )
-        return resp.choices[0].message.content or ""
+        print("[nanonets] Streaming response:")
+        full_content = []
+        total = 0  # running char count, to throttle the runaway check
+        for chunk in resp:
+            content = chunk.choices[0].delta.content
+            if content:
+                print(content, end="", flush=True)
+                full_content.append(content)
+                total += len(content)
+                # Cheap to check; only meaningful once we have a window's worth.
+                if total >= config.NANONETS_REPEAT_WINDOW and _is_runaway(
+                    "".join(full_content)
+                ):
+                    print("\n[nanonets] runaway repetition detected; aborting stream")
+                    resp.close()
+                    break
+        print("\n[nanonets] Images processed / streaming complete")
+        return _close_dangling_img("".join(full_content))
 
 
 def _clean_text_line(line: str) -> str:
@@ -113,17 +175,20 @@ def parse_layout(markdown: str):
 
         text = _TABLE_TAG_RE.sub("\n", payload)
         for raw in text.splitlines():
-            line = _clean_text_line(raw)
-            if not line or _POINTS_ONLY_RE.match(line):
+            line = raw.strip()
+            if not line:
                 continue
+            # Match the marker before blank runs are scrubbed, so an answer line's
+            # "N. ____ unit" can be told apart from a real statement.
             match = _match_marker(line)
             if match is not None and (last is None or match[0] > last):
                 # New problem starts here; flush the previous one first.
                 flush()
                 current = last = match[0]
-                line = line[match[1] :].strip()  # drop the printed marker
-                if not line:
-                    continue
+                line = _ANSWER_BLANK_RE.sub("", line[match[1] :].lstrip(), count=1)
+            line = _clean_text_line(line)
+            if not line or _POINTS_ONLY_RE.match(line):
+                continue
             buf.append(line)
     flush()
     return items

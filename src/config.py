@@ -25,14 +25,37 @@ NANONETS_DETECT_THRESHOLD = 0.5
 NANONETS_PROMPT = (
     "Extract the text from the above document as if you were reading it "
     "naturally. Return the tables in html format. Return the equations in LaTeX "
-    "representation. If there is an image in the document and image caption is "
-    "not present, add a small description of the image inside the <img></img> "
-    "tag; otherwise, add the image caption inside <img></img>. Watermarks should "
+    "representation. If there is an image in the document, output an empty "
+    "<img> tag; do not describe the image or add captions. "
+    "Watermarks should "
     "be wrapped in brackets. Ex: <watermark>OFFICIAL COPY</watermark>. Page "
     "numbers should be wrapped in brackets. Ex: <page_number>14</page_number> "
     "or <page_number>9/22</page_number>. Prefer using ☐ and ☑ for "
     "check boxes."
+# "Extract the text from the above document as if you were reading it naturally. Return the tables in html format. Return the equations in LaTeX representation. If there is an image in the document and image caption is not present, add a small description of the image inside the  tag; otherwise, add the image caption inside . Watermarks should be wrapped in brackets. Ex: OFFICIAL COPY. Page numbers should be wrapped in brackets. Ex: <page_number>14</page_number> or <page_number>9/22</page_number>. Prefer using ☐ and ☑ for check boxes."
 )
+
+# Hard cap on tokens generated per page. A backstop against runaway loops
+# (the model can degenerate into an infinite description on a dense figure);
+# generous enough for a fully packed competition page of real content.
+NANONETS_MAX_TOKENS = 16384
+# Runaway-loop guard. While streaming, if the last NANONETS_REPEAT_PROBE chars
+# of the tail recur NANONETS_REPEAT_COUNT times within the last
+# NANONETS_REPEAT_WINDOW chars, the model is stuck in a verbatim loop -- abort
+# the stream. Probes made only of layout-filler chars (underscores, dots) are
+# ignored so long answer-blanks / leader lines don't trip the guard.
+NANONETS_REPEAT_WINDOW = 1200
+NANONETS_REPEAT_PROBE = 48
+NANONETS_REPEAT_COUNT = 4
+
+# Picture->problem mapping is geometric: each non-blank DETR Picture is assigned
+# to the problem whose statement it vertically sits in. Nanonets' inline <img>
+# tags are NOT trusted for this (the model both hallucinates them on text-only
+# problems and omits them on real figures). Problem bands come from DETR's
+# left-margin text boxes: a content box whose left edge is within this fraction
+# of the page width of the leftmost content box starts a problem. Tight enough
+# to exclude centered headers ("Each problem is worth 5 points.") and footers.
+NANONETS_START_X_TOL_FRAC = 0.02
 
 # --- Detection ---
 DETECT_THRESHOLD = 0.6
