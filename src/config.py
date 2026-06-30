@@ -4,7 +4,35 @@ from pathlib import Path
 
 # --- Models ---
 LAYOUT_MODEL = "docling-project/docling-layout-heron"
-OCR_MODEL = "mlx-community/gemma-4-E4B-it-qat-4bit"
+OCR_MODEL = "mlx-community/gemma-4-E4B-it-qat-4bit"  # MLX engine (legacy path)
+
+# --- Engines ---
+# "nanonets": whole-page OCR via the local OpenAI-compatible endpoint (default).
+# "mlx": the per-crop Gemma OCR + anchor/grouping pipeline.
+DEFAULT_ENGINE = "nanonets"
+
+# --- Nanonets engine (OpenAI-compatible endpoint) ---
+NANONETS_BASE_URL = "http://127.0.0.1:8080/v1"
+NANONETS_MODEL = None  # None -> auto-detect via GET /v1/models (first id)
+# The detection threshold the nanonets engine uses for the DETR crops it pulls.
+# Lower than the mlx default: figures are faint and 0.6 drops some (e.g. a
+# grid diagram), while 0.5 catches them without admitting page-spanning junk.
+NANONETS_DETECT_THRESHOLD = 0.5
+
+# Standard Nanonets-OCR prompt. The <img></img> tags it emits at each figure's
+# location (in reading order) are what lets us map DETR crops to problems, so do
+# not drop the image-description instruction.
+NANONETS_PROMPT = (
+    "Extract the text from the above document as if you were reading it "
+    "naturally. Return the tables in html format. Return the equations in LaTeX "
+    "representation. If there is an image in the document and image caption is "
+    "not present, add a small description of the image inside the <img></img> "
+    "tag; otherwise, add the image caption inside <img></img>. Watermarks should "
+    "be wrapped in brackets. Ex: <watermark>OFFICIAL COPY</watermark>. Page "
+    "numbers should be wrapped in brackets. Ex: <page_number>14</page_number> "
+    "or <page_number>9/22</page_number>. Prefer using ☐ and ☑ for "
+    "check boxes."
+)
 
 # --- Detection ---
 DETECT_THRESHOLD = 0.6

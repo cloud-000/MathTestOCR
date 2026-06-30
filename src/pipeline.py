@@ -1,15 +1,21 @@
 """Orchestration: page image -> structured problems.
 
-Flow:  detect -> OCR each text box -> find anchors -> group -> assemble.
-No global VLM reasoning anywhere.
+Two engines:
+  * mlx       -- detect -> OCR each text box -> find anchors -> group -> assemble.
+                 No global VLM reasoning; all segmentation is deterministic geometry.
+  * nanonets  -- one whole-page OCR pass returns problem-segmented markdown with
+                 inline <img> tags; DETR supplies only the image crops, mapped to
+                 problems by reading-order ordinal (see process_image_nanonets).
 """
 
+import sys
 from dataclasses import dataclass, field
 
 from PIL import Image
 
 from . import anchors as anchors_mod
 from . import config, detect, grouping
+from . import nanonets as nanonets_mod
 from .ocr import OCRModel
 
 
@@ -80,3 +86,87 @@ def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD):
 
     problems = _assemble(groups, image, ocr)
     return problems, detections, groups
+
+
+def _sorted_pictures(detections, image):
+    """Non-blank DETR Picture detections, sorted top-to-bottom (reading order)."""
+    pics = [
+        d
+        for d in detections
+        if d["label"] == "Picture" and not grouping.is_blank_crop(image, d["box"])
+    ]
+    pics.sort(key=lambda d: (d["box"][1], d["box"][0]))
+    return pics
+
+
+def process_image_nanonets(image_path, client, threshold=config.NANONETS_DETECT_THRESHOLD):
+    """Whole-page OCR via the nanonets engine; DETR supplies the image crops.
+
+    Returns (problems, detections, groups) to match process_image. `groups` maps
+    each problem to the Picture detections assigned to it (for the debug overlay).
+    """
+    image = Image.open(image_path).convert("RGB")
+    detections = detect.detect(image, threshold)
+    markdown = client.parse_page(image)
+    items = nanonets_mod.parse_layout(markdown)
+
+    # Nanonets reports the header/content split itself: any <img> before problem 1
+    # (problem is None) is a page logo/banner. Drop that many Picture crops from the
+    # top so both sides start at the first content figure and the ordinal zip lines up.
+    pictures = _sorted_pictures(detections, image)
+    n_header = sum(1 for it in items if it["kind"] == "image" and it["problem"] is None)
+    pictures = pictures[n_header:]
+    img_items = [it for it in items if it["kind"] == "image" and it["problem"] is not None]
+
+    # Reading-order ordinal mapping: the i-th in-body <img> tag <-> the i-th DETR
+    # Picture from the top. Both sides have the header dropped, so they align.
+    for i, it in enumerate(img_items):
+        it["_pic"] = pictures[i] if i < len(pictures) else None
+    leftover = pictures[len(img_items):]
+    if len(pictures) != len(img_items):
+        print(
+            f"[nanonets] image-count mismatch: {len(img_items)} <img> tag(s) vs "
+            f"{len(pictures)} DETR picture(s)",
+            file=sys.stderr,
+        )
+
+    problems = {}  # number -> Problem, insertion-ordered (numbers increase)
+    groups = {}
+
+    def problem_for(number):
+        return problems.setdefault(number, Problem(number=number))
+
+    for it in items:
+        number = it["problem"]
+        if number is None:  # page header (title/logo before problem 1)
+            continue
+        prob = problem_for(number)
+        if it["kind"] == "text":
+            lines = [ln for ln in it["text"].splitlines() if not grouping.is_footer_text(ln)]
+            text = "\n".join(lines).strip()
+            if text:
+                prob.elements.append(ProblemElement("text", "Text", [], text=text))
+        else:
+            pic = it.get("_pic")
+            if pic is not None:
+                box = pic["box"]
+                prob.elements.append(
+                    ProblemElement("image", "Picture", box, crop=image.crop(tuple(box)))
+                )
+                groups.setdefault(number, []).append(pic)
+            else:
+                # Nanonets saw a figure DETR did not detect: record it, no crop.
+                prob.elements.append(ProblemElement("image", "Picture", [], text=it["text"]))
+
+    # DETR found more figures than Nanonets tagged: attach the extras to the last
+    # problem so no detected image is silently dropped.
+    if leftover and problems:
+        last = problems[max(problems)]
+        for pic in leftover:
+            box = pic["box"]
+            last.elements.append(
+                ProblemElement("image", "Picture", box, crop=image.crop(tuple(box)))
+            )
+            groups.setdefault(last.number, []).append(pic)
+
+    return [problems[n] for n in sorted(problems)], detections, groups

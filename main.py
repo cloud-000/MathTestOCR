@@ -11,9 +11,10 @@ from pathlib import Path
 
 from src import config
 from src.annotate import draw_detections
+from src.nanonets import NanonetsClient
 from src.ocr import OCRModel
 from src.pdf_io import pdf_to_images
-from src.pipeline import process_image
+from src.pipeline import process_image, process_image_nanonets
 
 
 def _print_problems(problems):
@@ -22,13 +23,24 @@ def _print_problems(problems):
         for el in p.elements:
             if el.kind == "text":
                 print(el.text)
-            else:
+            elif el.box:
                 print(f"[{el.label} image @ {el.box}]")
+            else:
+                # Figure Nanonets detected but DETR did not crop.
+                print(f"[{el.label} image (no crop): {el.text}]")
 
 
 def cmd_parse(args):
-    ocr = OCRModel()
-    problems, detections, groups = process_image(args.image, ocr, args.threshold)
+    ocr = None
+    if args.engine == "nanonets":
+        threshold = args.threshold if args.threshold is not None else config.NANONETS_DETECT_THRESHOLD
+        problems, detections, groups = process_image_nanonets(
+            args.image, NanonetsClient(), threshold
+        )
+    else:
+        threshold = args.threshold if args.threshold is not None else config.DETECT_THRESHOLD
+        ocr = OCRModel()
+        problems, detections, groups = process_image(args.image, ocr, threshold)
     _print_problems(problems)
 
     if args.debug:
@@ -49,7 +61,8 @@ def cmd_parse(args):
                 if el.kind == "image" and el.crop is not None:
                     el.crop.save(out_dir / f"p{p.number}_img{i}.png")
 
-    ocr.unload()
+    if ocr is not None:
+        ocr.unload()
 
 
 def cmd_pdf(args):
@@ -63,7 +76,18 @@ def main():
 
     p_parse = sub.add_parser("parse", help="parse a single page image")
     p_parse.add_argument("image")
-    p_parse.add_argument("--threshold", type=float, default=config.DETECT_THRESHOLD)
+    p_parse.add_argument(
+        "--engine",
+        choices=["nanonets", "mlx"],
+        default=config.DEFAULT_ENGINE,
+        help="parsing engine (default: %(default)s)",
+    )
+    p_parse.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="DETR detection confidence (default: engine-specific)",
+    )
     p_parse.add_argument("--debug", action="store_true", help="save annotated overlay")
     p_parse.add_argument("--save-images", help="dir to save problem image crops")
     p_parse.set_defaults(func=cmd_parse)

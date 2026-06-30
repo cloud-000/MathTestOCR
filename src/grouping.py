@@ -11,7 +11,7 @@ from PIL import Image, ImageStat
 from . import config
 
 _FOOTER_RE = re.compile(
-    r"copyright|all rights reserved|www\.|https?://"
+    r"copyright|©|all rights reserved|www\.|https?://"
     r"|^\s*page\s*\d+\s*$|^\s*score\s*:?\s*$",
     re.IGNORECASE,
 )
