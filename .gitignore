@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+m0/
+test
+notes.txt
+prompts.txt
+test.py
+__init__.py
+mlxWrapper.py
