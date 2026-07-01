@@ -32,16 +32,23 @@ def write_problems(problems, dest):
 def write_solutions(solutions, dest, suffix="solution"):
     """Write per-problem solution/answer text alongside the problems in `dest`.
 
-    `solutions` maps problem number -> text. Files are named
-    ``problem_<n>_<suffix>.txt`` (suffix "solution" or "answer"). Empty entries
-    are skipped. `dest` is expected to already hold the parsed problems, but is
-    created if missing. Returns the number of files written.
+    `solutions` maps problem number -> value, where a value is either a single
+    string or a list of strings (a problem may have several distinct solutions).
+    A string is written as ``problem_<n>_<suffix>.txt``; a list is written as
+    ``problem_<n>_<suffix>_<k>.txt`` (1-based), so multiple solutions per problem
+    are preserved. Empty entries are skipped. `dest` is created if missing.
+    Returns the number of files written.
     """
     out = Path(dest)
     out.mkdir(parents=True, exist_ok=True)
     written = 0
-    for number, text in solutions.items():
-        if text and text.strip():
-            (out / f"problem_{number}_{suffix}.txt").write_text(text)
+    for number, value in solutions.items():
+        if isinstance(value, (list, tuple)):
+            for k, text in enumerate(value, start=1):
+                if text and text.strip():
+                    (out / f"problem_{number}_{suffix}_{k}.txt").write_text(text)
+                    written += 1
+        elif value and value.strip():
+            (out / f"problem_{number}_{suffix}.txt").write_text(value)
             written += 1
     return written

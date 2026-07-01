@@ -46,6 +46,13 @@ class Series:
     name = "base"
     has_solutions = False
     has_answers = False
+    # When True, the `solutions` command OCRs each solution page to markdown,
+    # concatenates every page into one string, and hands the whole thing to
+    # `parse_solutions` -- letting the series segment its solution document its
+    # own way (multi-page spans, "Solution N by ..." blocks) instead of the
+    # per-page marker pipeline. Requires the nanonets engine; also skips DETR
+    # detection, so it is faster on text-only solution PDFs.
+    custom_solution_parser = False
 
     # --- Discovery -------------------------------------------------------
     def discover_tests(self, data_dir):
@@ -94,3 +101,20 @@ class Series:
         these as ``problem_<n>_answer.txt``.
         """
         return {}
+
+    def parse_solutions(self, full_text: str) -> dict:
+        """Segment the whole-test solution OCR into {problem_number: text}.
+
+        Called only when `custom_solution_parser` is True; `full_text` is every
+        solution page's markdown concatenated in reading order. The default
+        splits on this series' problem markers (reusing the nanonets layout
+        splitter) and joins each problem's text across page breaks. Override to
+        implement a series-specific solution layout.
+        """
+        from ..nanonets import parse_layout
+
+        grouped: dict[int, list[str]] = {}
+        for item in parse_layout(full_text, self.match_marker()):
+            if item["kind"] == "text" and item["problem"] is not None:
+                grouped.setdefault(item["problem"], []).append(item["text"])
+        return {n: "\n".join(parts) for n, parts in grouped.items()}

@@ -24,8 +24,14 @@ from src import config, output
 from src.annotate import draw_detections
 from src.nanonets import NanonetsClient
 from src.ocr import OCRModel
+from src.ocr_cache import PARSE_CACHE, SOLUTION_CACHE, OCRCache
 from src.pdf_io import pdf_to_images
-from src.pipeline import process_image, process_image_nanonets, process_test
+from src.pipeline import (
+    ocr_pages_markdown,
+    process_image,
+    process_image_nanonets,
+    process_test,
+)
 from src.series import Test, get_series, series_names
 
 
@@ -62,12 +68,12 @@ def _resolve_data_dir(series, data_dir):
     return dd
 
 
-def _parse_one_test(series, test, engine, model, threshold):
+def _parse_one_test(series, test, engine, model, threshold, cache=None):
     """Render a test to pages and parse them into a merged, post-processed list."""
     match = series.match_marker()
     with tempfile.TemporaryDirectory(prefix="comp-ocr-") as workdir:
         pages = series.test_pages(test, workdir)
-        problems = process_test(pages, engine, model, threshold, match)
+        problems = process_test(pages, engine, model, threshold, match, cache=cache)
     return series.postprocess(problems)
 
 
@@ -89,7 +95,10 @@ def _cmd_parse_batch(args):
                 print(f"[{series.name}] skip {test.id} (already parsed; --force to redo)")
                 continue
             print(f"[{series.name}] parsing {test.id} ...")
-            problems = _parse_one_test(series, test, args.engine, model, args.threshold)
+            cache = OCRCache(dest / PARSE_CACHE, enabled=args.cache)
+            problems = _parse_one_test(
+                series, test, args.engine, model, args.threshold, cache=cache
+            )
             n = output.write_problems(problems, dest)
             print(f"[{series.name}] wrote {n} problem(s) -> {dest}")
     finally:
@@ -160,6 +169,10 @@ def _cmd_solutions_ocr(args, series):
     tests = series.discover_tests(data_dir)
     print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
     match = series.match_marker()
+    # A series can claim its whole solution document instead of the per-page
+    # marker pipeline (see Series.parse_solutions). Only the nanonets engine
+    # produces the whole-page markdown that path consumes.
+    use_series_parser = series.custom_solution_parser and args.engine == "nanonets"
 
     model = _open_engine(args.engine)
     try:
@@ -169,15 +182,23 @@ def _cmd_solutions_ocr(args, series):
             if sol is None:
                 print(f"[{series.name}] skip {test.id} (no solution source found)")
                 continue
-            if (dest / f"problem_1_solution.txt").exists() and not args.force:
+            if any(dest.glob("problem_1_solution*.txt")) and not args.force:
                 print(f"[{series.name}] skip {test.id} solutions (exist; --force to redo)")
                 continue
             print(f"[{series.name}] scraping solutions for {test.id} ...")
+            cache = OCRCache(dest / SOLUTION_CACHE, enabled=args.cache)
             with tempfile.TemporaryDirectory(prefix="comp-ocr-sol-") as workdir:
                 pages = series.test_pages(Test(id=test.id, source=sol), workdir)
-                problems = process_test(pages, args.engine, model, args.threshold, match)
-            problems = series.postprocess(problems)
-            solutions = {p.number: p.text for p in problems}
+                if use_series_parser:
+                    solutions = series.parse_solutions(
+                        ocr_pages_markdown(pages, model, cache=cache)
+                    )
+                else:
+                    problems = process_test(
+                        pages, args.engine, model, args.threshold, match, cache=cache
+                    )
+                    problems = series.postprocess(problems)
+                    solutions = {p.number: p.text for p in problems}
             n = output.write_solutions(solutions, dest)
             print(f"[{series.name}] wrote {n} solution file(s) -> {dest}")
     finally:
@@ -227,6 +248,12 @@ def _add_engine_args(p):
         "--out",
         default=config.DEFAULT_OUT_DIR,
         help="output root (series mode writes <out>/<series>/<test>/)",
+    )
+    p.add_argument(
+        "--cache",
+        action="store_true",
+        help="cache whole-page OCR in each test dir and reuse it on later runs "
+        "(nanonets only; DETR still runs). Delete the cache file to re-OCR.",
     )
 
 

@@ -166,7 +166,11 @@ def _assign_pictures(detections, image, problem_seq):
 
 
 def process_image_nanonets(
-    image_path, client, threshold=config.NANONETS_DETECT_THRESHOLD, match_marker=None
+    image_path,
+    client,
+    threshold=config.NANONETS_DETECT_THRESHOLD,
+    match_marker=None,
+    cache=None,
 ):
     """Whole-page OCR via the nanonets engine; DETR supplies the image crops.
 
@@ -177,7 +181,9 @@ def process_image_nanonets(
     groups); `groups` maps each problem to its Picture detections (debug overlay).
 
     `match_marker` is an optional series-specific marker matcher for
-    competition-specific numbering quirks.
+    competition-specific numbering quirks. `cache` is an optional OCRCache: when
+    given, the (slow) whole-page OCR is served from / written to it, while DETR
+    detection still runs every time.
     """
     print("[nanonets] Starting pipeline...")
     image = Image.open(image_path).convert("RGB")
@@ -185,7 +191,10 @@ def process_image_nanonets(
     detections = detect.detect(image, threshold)
     print("[nanonets] Layout detection done.")
     print("[nanonets] Running whole-page OCR (Nanonets)...")
-    markdown = client.parse_page(image)
+    if cache is not None:
+        markdown = cache.page_markdown(image_path, lambda: client.parse_page(image))
+    else:
+        markdown = client.parse_page(image)
     print("[nanonets] Nanonets OCR done.")
     items = nanonets_mod.parse_layout(markdown, match_marker)
 
@@ -225,7 +234,7 @@ def process_image_nanonets(
     return [problems[n] for n in sorted(problems)], detections, groups
 
 
-def process_test(page_paths, engine, model, threshold=None, match=None):
+def process_test(page_paths, engine, model, threshold=None, match=None, cache=None):
     """Parse every page of a multi-page test and merge problems by number.
 
     A test (e.g. a USAMTS PDF rendered to page PNGs) may span several pages, with
@@ -233,13 +242,17 @@ def process_test(page_paths, engine, model, threshold=None, match=None):
     through the chosen engine independently, then problems sharing a number are
     merged (their elements concatenated in page order). `engine` is "nanonets" or
     "mlx"; `model` is the matching NanonetsClient / OCRModel. `match` is the
-    series-specific marker matcher. Returns the merged [Problem], number-sorted.
+    series-specific marker matcher. `cache` is an optional OCRCache for the
+    nanonets whole-page OCR (ignored by the mlx engine, which OCRs per crop).
+    Returns the merged [Problem], number-sorted.
     """
     merged = {}  # number -> Problem
     for path in page_paths:
         if engine == "nanonets":
             thr = threshold if threshold is not None else config.NANONETS_DETECT_THRESHOLD
-            problems, _, _ = process_image_nanonets(path, model, thr, match_marker=match)
+            problems, _, _ = process_image_nanonets(
+                path, model, thr, match_marker=match, cache=cache
+            )
         else:
             thr = threshold if threshold is not None else config.DETECT_THRESHOLD
             problems, _, _ = process_image(path, model, thr, match=match)
@@ -248,3 +261,24 @@ def process_test(page_paths, engine, model, threshold=None, match=None):
                 merged[p.number] = Problem(number=p.number)
             merged[p.number].elements.extend(p.elements)
     return [merged[n] for n in sorted(merged)]
+
+
+def ocr_pages_markdown(page_paths, client, cache=None):
+    """Whole-page OCR of every page to markdown, concatenated in reading order.
+
+    Unlike `process_test`, this runs no layout detection and does no problem
+    segmentation -- it just returns the raw Nanonets markdown for the whole
+    document. Used by the series solution parser (`Series.parse_solutions`),
+    which segments the concatenated text itself. `client` is a NanonetsClient.
+    `cache` is an optional OCRCache serving / storing each page's markdown.
+    """
+    parts = []
+    for path in page_paths:
+        if cache is not None:
+            markdown = cache.page_markdown(
+                path, lambda p=path: client.parse_page(Image.open(p).convert("RGB"))
+            )
+        else:
+            markdown = client.parse_page(Image.open(path).convert("RGB"))
+        parts.append(markdown)
+    return "\n\n".join(parts)

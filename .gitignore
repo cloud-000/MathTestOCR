@@ -13,3 +13,5 @@ GEMINI.md
 tmp
 TODOS.txt
 out/
+cached.txt
+scratch.py
