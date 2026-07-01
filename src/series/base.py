@@ -6,6 +6,7 @@ pieces that differ. Nothing here loads a model or does OCR -- that stays in the
 pipeline; a series only describes *what* to parse and *how its numbering works*.
 """
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,38 @@ from .. import config, pdf_io
 
 # Page-image extensions recognized when a test is a folder of pages rather than a PDF.
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+
+# --- Answer-key line parsing (shared by series answer parsers) ---
+# One "N." / "N)" entry inside an answer-key line. Several entries often share a
+# line (multi-column keys OCR'd row-wise: "1. 5   5. 3025"), so entries are
+# found by this marker: a 1-3 digit number at the start or after whitespace,
+# with whitespace after the dot. A decimal answer like "12.5" never has a space
+# after its point, and 4-digit years ("2023.") are too long, so neither splits
+# an entry.
+_ANSWER_ENTRY_RE = re.compile(r"(?:^|(?<=\s))(\d{1,3})\s*[.)]\s+")
+_TAG_RE = re.compile(r"<[^>]+>")
+_BLANK_RUN_RE = re.compile(r"_{2,}")  # answer blanks: "1. ________ 42"
+
+
+def numbered_answers_in_line(line: str):
+    """Extract answer-key entries from one OCR'd line.
+
+    Returns ``(leading, pairs)``: `leading` is the text before the first entry
+    (empty for a pure answer-key line -- callers use it to tell key lines from
+    prose that merely mentions "3. "), and `pairs` is ``[(number, answer), ...]``
+    with each answer running up to the next entry. HTML tags (table cells)
+    become spaces and answer-blank runs are dropped before matching.
+    """
+    text = _BLANK_RUN_RE.sub(" ", _TAG_RE.sub(" ", line)).strip()
+    matches = list(_ANSWER_ENTRY_RE.finditer(text))
+    if not matches:
+        return text, []
+    leading = text[: matches[0].start()].strip()
+    pairs = []
+    for m, nxt in zip(matches, matches[1:] + [None]):
+        end = nxt.start() if nxt is not None else len(text)
+        pairs.append((int(m.group(1)), text[m.end() : end].strip()))
+    return leading, pairs
 
 
 @dataclass
@@ -46,13 +79,6 @@ class Series:
     name = "base"
     has_solutions = False
     has_answers = False
-    # When True, the `solutions` command OCRs each solution page to markdown,
-    # concatenates every page into one string, and hands the whole thing to
-    # `parse_solutions` -- letting the series segment its solution document its
-    # own way (multi-page spans, "Solution N by ..." blocks) instead of the
-    # per-page marker pipeline. Requires the nanonets engine; also skips DETR
-    # detection, so it is faster on text-only solution PDFs.
-    custom_solution_parser = False
 
     # --- Discovery -------------------------------------------------------
     def discover_tests(self, data_dir):
@@ -114,23 +140,27 @@ class Series:
         """Return the solution source (PDF/folder) for `test`, or None."""
         return None
 
-    def scrape_answers(self, test: Test) -> dict:
-        """Return {problem_number: answer} for `test`, or {} if unavailable.
+    def clean_solution_markdown(self, page_index: int, markdown: str) -> str:
+        """Per-page cleanup of solution-OCR markdown before problem tagging.
 
-        The answer-key counterpart to `solution_source`: for series that publish
-        only an answer key (no worked solutions), the `solutions` command writes
-        these as ``problem_<n>_answer.txt``.
+        Applied to each page both when the pipeline assigns figures to problems
+        and to the text handed to `parse_solutions` -- but never to what
+        `parse_answers` sees, so a series can strip content that would corrupt
+        problem numbering (Mandelbrot's out-of-order answer-key box) while its
+        answer parser still reads it from the raw markdown. Default: unchanged.
         """
-        return {}
+        return markdown
 
     def parse_solutions(self, full_text: str) -> dict:
         """Segment the whole-test solution OCR into {problem_number: text}.
 
-        Called only when `custom_solution_parser` is True; `full_text` is every
-        solution page's markdown concatenated in reading order. The default
+        `full_text` is every solution page's markdown (after
+        `clean_solution_markdown`) concatenated in reading order. The default
         splits on this series' problem markers (reusing the nanonets layout
         splitter) and joins each problem's text across page breaks. Override to
-        implement a series-specific solution layout.
+        implement a series-specific solution layout; the problem numbers must
+        agree with the pipeline's own marker tagging, which assigns the DETR
+        figure crops (see pipeline.process_solution_document).
         """
         from ..nanonets import parse_layout
 
@@ -142,3 +172,34 @@ class Series:
             if item["kind"] == "text" and item["problem"] is not None:
                 grouped.setdefault(item["problem"], []).append(item["text"])
         return {n: "\n".join(parts) for n, parts in grouped.items()}
+
+    # --- Answers ----------------------------------------------------------
+    def scrape_answers(self, test: Test) -> dict:
+        """Return {problem_number: answer} for `test` without any OCR, or {}.
+
+        For series whose key is already machine-readable (Purple Comet's
+        pre-scraped ``answers.txt``). The `solutions` command tries this first;
+        when it returns {}, it falls back to OCR-ing `answer_source` and calling
+        `parse_answers`. Answers are written as ``problem_<n>_answer.txt``.
+        """
+        return {}
+
+    def answer_source(self, test: Test):
+        """Return the document (PDF/folder) holding `test`'s answer key, or None.
+
+        May be the same file as `solution_source` (Mandelbrot prints its key in
+        a box at the top of the solutions PDF); the `solutions` command reuses
+        that document's OCR instead of running it twice.
+        """
+        return None
+
+    def parse_answers(self, test: Test, pages_markdown: list) -> dict:
+        """Turn the answer document's per-page OCR into {problem_number: answer}.
+
+        `pages_markdown` is one *raw* markdown string per rendered page of
+        `answer_source` (uncleaned -- see `clean_solution_markdown`), so a
+        parser can select its pages (Mathcounts finds its round's pages by
+        their header) or its region (Mandelbrot's "Answer Key" box) itself.
+        Called only when `answer_source` returned a document. Default: {}.
+        """
+        return {}

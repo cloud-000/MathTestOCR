@@ -10,17 +10,34 @@ cover several rounds at once. Each problem round is its own test (id
 ``<year>_<level>_<round>``, e.g. ``2025_state_sprint``); the round whitelist is
 ``config.MATHCOUNTS_TEST_ROUNDS``.
 
-Solutions are **deferred**: the shared ``solutions.pdf``/``answers.pdf`` restart
-numbering across rounds, so mapping them back to individual rounds needs a real
-OCR run to inspect the alignment first. Until then `has_solutions` is False and
-the `solutions` command cleanly skips this series.
+Worked solutions are **deferred**: the shared ``solutions.pdf`` restarts
+numbering across rounds, so mapping it back to individual rounds needs a real
+OCR run to inspect the alignment first; `has_solutions` stays False.
+
+**Answers** are wired: the shared ``answers.pdf`` is a title page followed by a
+page run per round, each page headed "<Round> Round" ("Sprint Round" spans two
+pages, then Target, Team, and the remaining pages Countdown). `parse_answers`
+selects the parsed test's pages by that header in the OCR markdown -- some
+years are scanned with no text layer, so the header must come from OCR, not
+the PDF -- and reads the ``N. ____ answer`` blank lines off them.
 """
 
 import re
 from pathlib import Path
 
 from .. import config
-from .base import Series, Test
+from .base import Series, Test, numbered_answers_in_line
+
+# Round stem (the test PDF's filename) -> the header its answer-key pages carry.
+# Practice rounds (warmups/workouts/masters) publish separate keys with a
+# different layout and are not wired yet.
+_ANSWER_ROUND_HEADERS = {
+    "sprint": "sprint round",
+    "target": "target round",
+    "team": "team round",
+    "countdown": "countdown round",
+    "cdr": "countdown round",
+}
 
 # MATHCOUNTS fill-in-the-blank problems print "____ cm" or "____ factors" (a
 # blank plus an optional unit) right after the problem number, before the
@@ -44,7 +61,8 @@ _SKIP_PAGE_PHRASES = ("do not begin until you are instructed", "forms of answers
 
 class MathcountsSeries(Series):
     name = "mathcounts"
-    has_solutions = False  # shared per-level solutions.pdf/answers.pdf -- see module docstring
+    has_solutions = False  # shared per-level solutions.pdf deferred -- see module docstring
+    has_answers = True
 
     def layout_options(self):
         """Opt into the MATHCOUNTS-tuned nanonets figure/table heuristics.
@@ -81,6 +99,37 @@ class MathcountsSeries(Series):
             test_id = f"{pdf.parent.parent.name}_{pdf.parent.name}_{pdf.stem}"
             tests.append(Test(id=test_id, source=pdf))
         return tests
+
+    def answer_source(self, test):
+        """The shared ``answers.pdf`` sibling covering every round, or None."""
+        if test.source.stem not in _ANSWER_ROUND_HEADERS:
+            return None  # practice rounds -- separate key files, not wired yet
+        src = test.source.parent / "answers.pdf"
+        return src if src.exists() else None
+
+    def parse_answers(self, test, pages_markdown):
+        """Pull this round's answers out of the shared answer-key document.
+
+        Pages are selected by the round header ("Sprint Round", ...) appearing
+        anywhere in their OCR markdown; the title page carries no round header
+        and drops out on its own. Entries are ``N. ____ answer`` blank lines,
+        several per OCR'd line when the key is laid out in columns; unit words
+        printed under a blank sit on their own line and are ignored. First
+        occurrence of a number wins.
+        """
+        header = _ANSWER_ROUND_HEADERS[test.source.stem]
+        pages = [
+            md for md in pages_markdown
+            if header in re.sub(r"\s+", " ", md).lower()
+        ]
+        answers = {}
+        for markdown in pages:
+            for line in markdown.splitlines():
+                _, pairs = numbered_answers_in_line(line)
+                for n, answer in pairs:
+                    if answer:
+                        answers.setdefault(n, answer)
+        return answers
 
     def postprocess(self, problems):
         """Drop the leaked answer-blank unit from each problem's first text element."""

@@ -83,6 +83,21 @@ NANONETS_MAX_PICTURE_AREA_FRAC = 0.5
 # wanted as separate crops.
 NESTED_PICTURE_FRAC = 0.9
 
+# --- Solution-figure assignment (pipeline.process_solution_document) ---
+# Tier 0 reads problem-marker positions from the solution PDF's embedded text
+# layer. A text block only counts as a problem start when at least this much
+# text follows its marker -- a real paragraph ("1. It is possible to fit...").
+# This keeps short marker-shaped furniture out: answer-key cells ("4. 12") and
+# bare number headers, whose out-of-order numbers would poison the assignment.
+SOLUTION_MARKER_MIN_CHARS = 40
+# Two-column solution sheets (Mandelbrot's landscape pages) are detected by a
+# vertical gutter no text block crosses: at least this fraction of the page
+# wide, with its center inside the middle band below. Blocks wider than
+# SOLUTION_COLUMN_MAX_SPAN_FRAC (banners, footers) are ignored by the search.
+SOLUTION_GUTTER_MIN_FRAC = 0.03
+SOLUTION_GUTTER_BAND = (0.3, 0.7)
+SOLUTION_COLUMN_MAX_SPAN_FRAC = 0.6
+
 
 @dataclass(frozen=True)
 class LayoutOptions:

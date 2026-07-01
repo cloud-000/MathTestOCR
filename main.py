@@ -28,9 +28,10 @@ from src.ocr import OCRModel
 from src.ocr_cache import PARSE_CACHE, SOLUTION_CACHE, OCRCache
 from src.pdf_io import pdf_to_images
 from src.pipeline import (
-    ocr_pages_markdown,
+    ocr_pages,
     process_image,
     process_image_nanonets,
+    process_solution_document,
     process_test,
 )
 from src.series import Test, get_series, series_names
@@ -168,85 +169,144 @@ def cmd_parse(args):
 
 
 def cmd_solutions(args):
+    """Scrape per-problem solutions (text + figure crops) and/or answer keys."""
     series = get_series(args.series)
-    if series.has_solutions:
-        _cmd_solutions_ocr(args, series)
-    elif series.has_answers:
-        _cmd_answers(args, series)
-    else:
+    if not (series.has_solutions or series.has_answers):
         print(
             f"[{series.name}] has no solutions or answers (not yet supported); nothing to do"
         )
-
-
-def _cmd_solutions_ocr(args, series):
-    """OCR a per-test solution PDF into paired problem_<n>_solution.txt files."""
+        return
     data_dir = _resolve_data_dir(series, args.data_dir)
     out_root = Path(args.out) / series.name
 
     tests = series.discover_tests(data_dir)
     print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
     tests = _select_tests(series, tests, args.test)
-    match = series.match_marker()
-    # A series can claim its whole solution document instead of the per-page
-    # marker pipeline (see Series.parse_solutions). Only the nanonets engine
-    # produces the whole-page markdown that path consumes.
-    use_series_parser = series.custom_solution_parser and args.engine == "nanonets"
 
     model = _open_engine(args.engine)
     try:
         for test in tests:
             dest = out_root / test.id
-            sol = series.solution_source(test)
-            if sol is None:
+            sol = series.solution_source(test) if series.has_solutions else None
+            pages_md = None
+            if series.has_solutions and sol is None:
                 print(f"[{series.name}] skip {test.id} (no solution source found)")
-                continue
-            if any(dest.glob("problem_1_solution*.txt")) and not args.force:
-                print(f"[{series.name}] skip {test.id} solutions (exist; --force to redo)")
-                continue
-            print(f"[{series.name}] scraping solutions for {test.id} ...")
-            cache = OCRCache(dest / SOLUTION_CACHE, enabled=args.cache)
-            with tempfile.TemporaryDirectory(prefix="comp-ocr-sol-") as workdir:
-                pages = series.test_pages(Test(id=test.id, source=sol), workdir)
-                if use_series_parser:
-                    solutions = series.parse_solutions(
-                        ocr_pages_markdown(
-                            pages, model, cache=cache, layout=series.layout_options()
-                        )
-                    )
-                else:
-                    problems = process_test(
-                        pages, args.engine, model, args.threshold, match,
-                        cache=cache, layout=series.layout_options(),
-                    )
-                    problems = series.postprocess(problems)
-                    solutions = {p.number: p.text for p in problems}
-            n = output.write_solutions(solutions, dest)
-            print(f"[{series.name}] wrote {n} solution file(s) -> {dest}")
+            if sol is not None:
+                pages_md = _scrape_solutions(args, series, test, sol, dest, model)
+            if series.has_answers:
+                _scrape_answers(
+                    args, series, test, dest, model, out_root, data_dir, sol, pages_md
+                )
     finally:
         _close_engine(args.engine, model)
 
 
-def _cmd_answers(args, series):
-    """Write an answer key (no OCR / no model) into problem_<n>_answer.txt files."""
-    data_dir = _resolve_data_dir(series, args.data_dir)
-    out_root = Path(args.out) / series.name
+def _scrape_solutions(args, series, test, sol, dest, model):
+    """OCR one test's solution document into solution text + figure crops.
 
-    tests = series.discover_tests(data_dir)
-    print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
-    tests = _select_tests(series, tests, args.test)
+    Returns the raw per-page markdown when the OCR actually ran, so a same-file
+    answer key (see Series.answer_source) can be parsed without re-OCR; None
+    when the test was skipped or the mlx engine (no whole-page markdown) ran.
+    """
+    if any(dest.glob("problem_1_solution*.txt")) and not args.force:
+        print(f"[{series.name}] skip {test.id} solutions (exist; --force to redo)")
+        return None
+    print(f"[{series.name}] scraping solutions for {test.id} ...")
+    cache = OCRCache(dest / SOLUTION_CACHE, enabled=args.cache)
+    pages_md = None
+    with tempfile.TemporaryDirectory(prefix="comp-ocr-sol-") as workdir:
+        pages = series.test_pages(Test(id=test.id, source=sol), workdir)
+        if args.engine == "nanonets":
+            pages_md, figures = process_solution_document(
+                pages,
+                model,
+                args.threshold,
+                match=series.match_marker(),
+                cache=cache,
+                layout=series.layout_options(),
+                clean_page=series.clean_solution_markdown,
+                source_pdf=sol,
+            )
+            cleaned = "\n\n".join(
+                series.clean_solution_markdown(i, md) for i, md in enumerate(pages_md)
+            )
+            solutions = series.parse_solutions(cleaned)
+        else:
+            # Legacy mlx path: per-page marker pipeline; figures come from the
+            # problems' own image elements.
+            problems = series.postprocess(
+                process_test(
+                    pages, args.engine, model, args.threshold, series.match_marker(),
+                    cache=cache, layout=series.layout_options(),
+                )
+            )
+            solutions = {p.number: p.text for p in problems}
+            figures = {
+                p.number: [
+                    el.crop for el in p.elements if el.kind == "image" and el.crop is not None
+                ]
+                for p in problems
+            }
+    n = output.write_solutions(solutions, dest)
+    k = output.write_solution_images(figures, dest)
+    print(f"[{series.name}] wrote {n} solution file(s), {k} figure crop(s) -> {dest}")
+    return pages_md
 
-    for test in tests:
-        dest = out_root / test.id
-        if (dest / f"problem_1_answer.txt").exists() and not args.force:
-            print(f"[{series.name}] skip {test.id} answers (exist; --force to redo)")
-            continue
-        answers = series.scrape_answers(test)
-        if not answers:
-            print(f"[{series.name}] skip {test.id} (no answers found)")
-            continue
-        n = output.write_solutions(answers, dest, suffix="answer")
-        print(f"[{series.name}] wrote {n} answer file(s) -> {dest}")
+
+def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, sol_pages_md):
+    """Write one test's answer key into problem_<n>_answer.txt files.
+
+    Tries the no-OCR `scrape_answers` hook first (pre-scraped keys); otherwise
+    OCRs `answer_source` and hands the pages to `parse_answers`. When the key
+    lives inside the solution document just OCR'd, its markdown is reused.
+    """
+    if (dest / "problem_1_answer.txt").exists() and not args.force:
+        print(f"[{series.name}] skip {test.id} answers (exist; --force to redo)")
+        return
+    answers = series.scrape_answers(test)
+    if not answers:
+        src = series.answer_source(test)
+        if src is None:
+            print(f"[{series.name}] skip {test.id} answers (no answer source found)")
+            return
+        if args.engine != "nanonets":
+            print(f"[{series.name}] skip {test.id} answers (need the nanonets engine)")
+            return
+        if sol_pages_md is not None and src == sol:
+            pages_md = sol_pages_md
+        else:
+            # A same-file key shares the test's solution cache; a standalone
+            # answer document gets one cache shared across every test it covers
+            # (Mathcounts: one answers.pdf serves sprint/target/team/...).
+            if src == sol:
+                cache = OCRCache(dest / SOLUTION_CACHE, enabled=args.cache)
+            else:
+                cache = OCRCache(
+                    _answer_cache_path(out_root, data_dir, src), enabled=args.cache
+                )
+            with tempfile.TemporaryDirectory(prefix="comp-ocr-ans-") as workdir:
+                pages = series.test_pages(Test(id=test.id, source=src), workdir)
+                pages_md = ocr_pages(pages, model, cache=cache, layout=series.layout_options())
+        answers = series.parse_answers(test, pages_md)
+    if not answers:
+        print(f"[{series.name}] skip {test.id} (no answers found)")
+        return
+    n = output.write_solutions(answers, dest, suffix="answer")
+    print(f"[{series.name}] wrote {n} answer file(s) -> {dest}")
+
+
+def _answer_cache_path(out_root, data_dir, src):
+    """One shared OCR-cache file per answer document, under out/<series>/.
+
+    Named by the document's path relative to the data dir so the several tests
+    that share one key (e.g. every Mathcounts round in a level) hit one cache.
+    """
+    src = Path(src).resolve()
+    try:
+        stem = "_".join(src.relative_to(Path(data_dir).resolve()).with_suffix("").parts)
+    except ValueError:
+        stem = src.stem
+    return Path(out_root) / "_answers_ocr" / f"{stem}.json"
 
 
 def cmd_pdf(args):

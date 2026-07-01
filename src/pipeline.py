@@ -9,6 +9,7 @@ Two engines:
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from PIL import Image
 
@@ -367,15 +368,15 @@ def process_test(page_paths, engine, model, threshold=None, match=None, cache=No
     return [merged[n] for n in sorted(merged)]
 
 
-def ocr_pages_markdown(page_paths, client, cache=None, layout=None):
-    """Whole-page OCR of every page to markdown, concatenated in reading order.
+def ocr_pages(page_paths, client, cache=None, layout=None):
+    """Whole-page OCR of every page to markdown; one string per page.
 
     Unlike `process_test`, this runs no layout detection and does no problem
-    segmentation -- it just returns the raw Nanonets markdown for the whole
-    document. Used by the series solution parser (`Series.parse_solutions`),
-    which segments the concatenated text itself. `client` is a NanonetsClient.
-    `cache` is an optional OCRCache serving / storing each page's markdown.
-    `layout` is the series' LayoutOptions (only its OCR temperature is used here).
+    segmentation -- it just returns the raw Nanonets markdown per page, in
+    reading order. Used for answer-key documents (`Series.parse_answers`), whose
+    parsers select pages themselves. `client` is a NanonetsClient. `cache` is an
+    optional OCRCache serving / storing each page's markdown. `layout` is the
+    series' LayoutOptions (only its OCR temperature is used here).
     """
     layout = layout or config.LayoutOptions()
     temp = layout.nanonets_temperature
@@ -388,4 +389,216 @@ def ocr_pages_markdown(page_paths, client, cache=None, layout=None):
         else:
             markdown = client.parse_page(Image.open(path).convert("RGB"), temp)
         parts.append(markdown)
-    return "\n\n".join(parts)
+    return parts
+
+
+def _find_gutter(rects, page_width):
+    """x of the vertical gutter splitting two-column content, else None.
+
+    `rects` are content bounding boxes in rendered coordinates. Blocks wide
+    enough to span columns (banners, footers) are ignored; the remaining
+    x-intervals are merged and the first gap wide enough and central enough
+    (config.SOLUTION_GUTTER_*) is the gutter. Single-column pages merge into
+    one interval and return None.
+    """
+    narrow = sorted(
+        (r[0], r[2])
+        for r in rects
+        if r[2] - r[0] <= config.SOLUTION_COLUMN_MAX_SPAN_FRAC * page_width
+    )
+    if not narrow:
+        return None
+    merged = [narrow[0]]
+    for x0, x1 in narrow[1:]:
+        if x0 <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], x1))
+        else:
+            merged.append((x0, x1))
+    lo, hi = (frac * page_width for frac in config.SOLUTION_GUTTER_BAND)
+    for (_, a1), (b0, _) in zip(merged, merged[1:]):
+        if b0 - a1 >= config.SOLUTION_GUTTER_MIN_FRAC * page_width and lo <= (a1 + b0) / 2 <= hi:
+            return (a1 + b0) / 2
+    return None
+
+
+def _text_layer_markers(pdf_page, image, match, carry):
+    """Problem-marker positions from a solution page's embedded text layer.
+
+    The most reliable figure-assignment signal, available only for born-digital
+    PDFs: each text block that *starts* with a problem marker and carries a real
+    paragraph of text (config.SOLUTION_MARKER_MIN_CHARS -- which keeps
+    marker-shaped furniture like answer-key cells "4. 12" out) is a problem
+    start at an exact position. Returns ``(markers, gutter_x)`` where `markers`
+    is [(column, y, problem)] in reading order (column-major, strictly
+    increasing from `carry`); empty when the page has no text layer or no
+    confident markers.
+    """
+    match = match or anchors_mod._match_marker
+    scale = image.height / pdf_page.rect.height
+    blocks = [
+        (x0 * scale, y0 * scale, x1 * scale, y1 * scale, text)
+        for x0, y0, x1, y1, text, _, block_type in pdf_page.get_text("blocks")
+        if block_type == 0 and text.strip()
+    ]
+    gutter = _find_gutter(blocks, image.width)
+    starts = []
+    for x0, y0, x1, y1, text in blocks:
+        text = text.lstrip()
+        m = match(text)
+        if m is None or len(text) - m[1] < config.SOLUTION_MARKER_MIN_CHARS:
+            continue
+        col = 0 if gutter is None or x0 < gutter else 1
+        starts.append((col, y0, m[0]))
+    starts.sort(key=lambda s: (s[0], s[1]))
+    markers = []
+    last = carry
+    for col, y, number in starts:
+        if last is None or number > last:
+            markers.append((col, y, number))
+            last = number
+    return markers, gutter
+
+
+def _assign_pics_by_markers(pics, markers, gutter, carry):
+    """Assign each Picture to the last text-layer marker at or above it.
+
+    Positions compare column-major ((column, y), matching `markers`' reading
+    order); a picture above the page's first marker belongs to `carry`.
+    """
+    assigned = []
+    for pic in pics:
+        xc = (pic["box"][0] + pic["box"][2]) / 2
+        yc = (pic["box"][1] + pic["box"][3]) / 2
+        col = 0 if gutter is None or xc < gutter else 1
+        number = carry
+        for mcol, my, prob in markers:
+            if (mcol, my) <= (col, yc + config.Y_TOL):
+                number = prob
+            else:
+                break
+        assigned.append((pic, number))
+    return assigned
+
+
+def _assign_solution_pics(pics, items, page_height, carry):
+    """Pair each DETR Picture on a solution page with a problem number.
+
+    The OCR-only fallback used when the text layer gave no confident markers
+    (see _text_layer_markers). `items` is the page's `parse_layout` output
+    (already seeded with `carry`, the problem in progress at the top of the
+    page); `pics` is top-to-bottom. Three tiers, most reliable first:
+      1. the page starts no new problem -> everything belongs to `carry`;
+      2. nanonets' inline <img> count matches DETR's picture count -> zip them
+         in reading order (each <img> item is already tagged with its problem);
+      3. otherwise estimate by position: a picture's y-center fraction of the
+         page is looked up in the items' cumulative char-offset spans, and it
+         takes the problem of the item its fraction falls in. Rough (figures
+         occupy height but few chars, and column layouts break it), but only
+         used when everything better doesn't apply.
+    Returns [(picture_det, problem_number | None), ...].
+    """
+    numbers = {it["problem"] for it in items if it["problem"] is not None}
+    if not numbers or numbers == {carry}:
+        return [(p, carry) for p in pics]
+    img_items = [it for it in items if it["kind"] == "image"]
+    if len(img_items) == len(pics):
+        return [(p, it["problem"]) for p, it in zip(pics, img_items)]
+    spans = []  # (start_offset, problem) per item, in reading order
+    offset = 0
+    for it in items:
+        spans.append((offset, it["problem"]))
+        offset += max(len(it["text"]), 1)
+    assigned = []
+    for pic in pics:
+        yc = (pic["box"][1] + pic["box"][3]) / 2
+        target = (yc / page_height) * offset
+        number = carry
+        for start, prob in spans:
+            if start > target:
+                break
+            if prob is not None:
+                number = prob
+        assigned.append((pic, number))
+    return assigned
+
+
+def process_solution_document(
+    page_paths,
+    client,
+    threshold=None,
+    match=None,
+    cache=None,
+    layout=None,
+    clean_page=None,
+    source_pdf=None,
+):
+    """OCR a solution document and crop its figures, assigned to problems.
+
+    Text segmentation stays with the series (`Series.parse_solutions`); this
+    returns the raw material for it plus the figure crops the text pipeline
+    would lose: ``(pages_md, figures)`` where `pages_md` is the *raw* markdown
+    per page and `figures` maps problem number -> [PIL crop, ...] from DETR's
+    Picture boxes (blank, nested, and -- per `layout` -- page-spanning boxes
+    dropped, exactly as on statement pages).
+
+    Problem numbering must agree with what `parse_solutions` derives from the
+    same text, so each page is tagged with the same `match` marker matcher and
+    the same strictly-increasing guard, carried across pages. `clean_page` is
+    the series' per-page markdown cleanup ((page_index, markdown) -> markdown),
+    applied before tagging (e.g. Mandelbrot strips its out-of-order answer-key
+    box); `pages_md` stays uncleaned so answer parsers still see everything.
+    Figures above the first problem (cover art, logos) are dropped.
+
+    `source_pdf` is the PDF the pages were rendered from, when there is one:
+    a born-digital PDF's text layer gives exact marker positions (tier 0,
+    `_text_layer_markers`), used whenever its problem set agrees with the OCR's
+    for the page; otherwise assignment falls back to the OCR-only tiers
+    (`_assign_solution_pics`).
+    """
+    layout = layout or config.LayoutOptions()
+    thr = threshold if threshold is not None else config.NANONETS_DETECT_THRESHOLD
+    temp = layout.nanonets_temperature
+    doc = None
+    if source_pdf is not None and Path(source_pdf).suffix.lower() == ".pdf":
+        import pymupdf
+
+        doc = pymupdf.open(source_pdf)
+    pages_md = []
+    figures = {}
+    carry = None  # problem in progress at the top of the next page
+    for index, path in enumerate(page_paths):
+        image = Image.open(path).convert("RGB")
+        if cache is not None:
+            markdown = cache.page_markdown(path, lambda: client.parse_page(image, temp))
+        else:
+            markdown = client.parse_page(image, temp)
+        pages_md.append(markdown)
+        if clean_page is not None:
+            markdown = clean_page(index, markdown)
+        items = nanonets_mod.parse_layout(
+            markdown,
+            match,
+            split_marker_table_rows=layout.split_marker_table_rows,
+            start_problem=carry,
+        )
+        detections = detect.detect(image, thr)
+        pics = _sorted_pictures(detections, image, layout.max_picture_area_frac)
+        assigned = None
+        if pics and doc is not None:
+            # pdf_io names rendered pages "page_<pdf page number>.png".
+            pdf_index = int(Path(path).stem.split("_")[1]) - 1
+            markers, gutter = _text_layer_markers(doc[pdf_index], image, match, carry)
+            new_numbers = {it["problem"] for it in items} - {None, carry}
+            if markers and {m[2] for m in markers} == new_numbers:
+                assigned = _assign_pics_by_markers(pics, markers, gutter, carry)
+        if assigned is None:
+            assigned = _assign_solution_pics(pics, items, image.height, carry)
+        for pic, number in assigned:
+            if number is not None:
+                figures.setdefault(number, []).append(image.crop(tuple(pic["box"])))
+        page_numbers = [it["problem"] for it in items if it["problem"] is not None]
+        if page_numbers:
+            carry = max(page_numbers)
+    if doc is not None:
+        doc.close()
+    return pages_md, figures

@@ -101,7 +101,6 @@ def _split_solution_blocks(lines):
 class UsamtsSeries(Series):
     name = "usamts"
     has_solutions = True
-    custom_solution_parser = True  # solutions span pages; segment the whole doc
 
     @override
     def discover_tests(self, data_dir):

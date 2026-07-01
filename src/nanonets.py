@@ -170,7 +170,8 @@ def _clean_text_line(line: str) -> str:
     return _BLANK_RUN_RE.sub("", line).strip()
 
 
-def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False):
+def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False,
+                 start_problem=None):
     """Turn Nanonets markdown into an ordered list of items.
 
     Each item is a dict ``{"kind": "text"|"image", "problem": int|None, "text": str}``
@@ -180,6 +181,11 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
 
     `match_marker` is an optional series-specific marker matcher (see
     anchors._match_marker); it defaults to the built-in pattern set.
+
+    `start_problem` seeds the "current problem" state, for parsing one page of a
+    multi-page document: content before the page's first marker binds to the
+    problem carried in from the previous page instead of ``None``, and the
+    strictly-increasing marker guard continues from it.
 
     `split_marker_table_rows` is a series-scoped opt-in (see
     config.LayoutOptions): when True, a ``<table>`` block is folded in row by row
@@ -204,8 +210,8 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
 
     items = []
     buf: list[str] = []
-    current = None  # current problem number
-    last = None  # highest problem number accepted so far
+    current = start_problem  # current problem number
+    last = start_problem  # highest problem number accepted so far
 
     def flush():
         if not buf:
