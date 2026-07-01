@@ -47,7 +47,7 @@ def _ocr_text_boxes(detections, image, ocr: OCRModel):
             d["text"] = ""
 
 
-def _assemble(groups, image, ocr: OCRModel):
+def _assemble(groups, image, ocr: OCRModel, match=None):
     problems = []
     for number in sorted(groups):
         dets = sorted(groups[number], key=lambda d: (round(d["box"][1] / 10), d["box"][0]))
@@ -62,28 +62,32 @@ def _assemble(groups, image, ocr: OCRModel):
                 # printed problem number for inline anchors, so strip it back off.
                 latex = ocr.latex_ocr(crop)
                 if d.get("is_anchor") and d.get("marker_inline"):
-                    latex = anchors_mod.strip_leading_marker(latex)
+                    latex = anchors_mod.strip_leading_marker(latex, match)
                 elements.append(ProblemElement("text", d["label"], box, text=latex))
         problems.append(Problem(number=number, elements=elements))
     return problems
 
 
-def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD):
-    """Run the full pipeline on one page. Returns (problems, detections, groups)."""
+def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD, match=None):
+    """Run the full pipeline on one page. Returns (problems, detections, groups).
+
+    `match` is an optional series-specific marker matcher (see
+    anchors._match_marker) for competition-specific numbering quirks.
+    """
     image = Image.open(image_path).convert("RGB")
     detections = detect.detect(image, threshold)
     if not detections:
         return [], [], {}
 
     _ocr_text_boxes(detections, image, ocr)
-    anchors = anchors_mod.detect_anchors(detections, image.width)
+    anchors = anchors_mod.detect_anchors(detections, image.width, match)
 
     if anchors:
         groups = grouping.group_by_anchors(detections, anchors, image)
     else:
         groups = grouping.fallback_group_by_gaps(detections, image, image.height)
 
-    problems = _assemble(groups, image, ocr)
+    problems = _assemble(groups, image, ocr, match)
     return problems, detections, groups
 
 
@@ -161,7 +165,9 @@ def _assign_pictures(detections, image, problem_seq):
     return groups
 
 
-def process_image_nanonets(image_path, client, threshold=config.NANONETS_DETECT_THRESHOLD):
+def process_image_nanonets(
+    image_path, client, threshold=config.NANONETS_DETECT_THRESHOLD, match_marker=None
+):
     """Whole-page OCR via the nanonets engine; DETR supplies the image crops.
 
     Nanonets does all text transcription and problem segmentation. Figures are
@@ -169,6 +175,9 @@ def process_image_nanonets(image_path, client, threshold=config.NANONETS_DETECT_
     inline <img> tags are ignored, since the model both invents them on text-only
     problems and omits them on real figures. Returns (problems, detections,
     groups); `groups` maps each problem to its Picture detections (debug overlay).
+
+    `match_marker` is an optional series-specific marker matcher for
+    competition-specific numbering quirks.
     """
     print("[nanonets] Starting pipeline...")
     image = Image.open(image_path).convert("RGB")
@@ -178,7 +187,7 @@ def process_image_nanonets(image_path, client, threshold=config.NANONETS_DETECT_
     print("[nanonets] Running whole-page OCR (Nanonets)...")
     markdown = client.parse_page(image)
     print("[nanonets] Nanonets OCR done.")
-    items = nanonets_mod.parse_layout(markdown)
+    items = nanonets_mod.parse_layout(markdown, match_marker)
 
     print("[nanonets] Assembling problems...")
     problems = {}  # number -> Problem, insertion-ordered (numbers increase)
@@ -214,3 +223,28 @@ def process_image_nanonets(image_path, client, threshold=config.NANONETS_DETECT_
 
     print("[nanonets] Problem assembly done.")
     return [problems[n] for n in sorted(problems)], detections, groups
+
+
+def process_test(page_paths, engine, model, threshold=None, match=None):
+    """Parse every page of a multi-page test and merge problems by number.
+
+    A test (e.g. a USAMTS PDF rendered to page PNGs) may span several pages, with
+    a single problem's statement and figures split across them. Each page is run
+    through the chosen engine independently, then problems sharing a number are
+    merged (their elements concatenated in page order). `engine` is "nanonets" or
+    "mlx"; `model` is the matching NanonetsClient / OCRModel. `match` is the
+    series-specific marker matcher. Returns the merged [Problem], number-sorted.
+    """
+    merged = {}  # number -> Problem
+    for path in page_paths:
+        if engine == "nanonets":
+            thr = threshold if threshold is not None else config.NANONETS_DETECT_THRESHOLD
+            problems, _, _ = process_image_nanonets(path, model, thr, match_marker=match)
+        else:
+            thr = threshold if threshold is not None else config.DETECT_THRESHOLD
+            problems, _, _ = process_image(path, model, thr, match=match)
+        for p in problems:
+            if p.number not in merged:
+                merged[p.number] = Problem(number=p.number)
+            merged[p.number].elements.extend(p.elements)
+    return [merged[n] for n in sorted(merged)]

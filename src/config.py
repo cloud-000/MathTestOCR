@@ -97,3 +97,22 @@ FONT_SIZE = 24
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_IMAGE_DIR = PROJECT_ROOT / "m0"
 DEFAULT_DEBUG_DIR = PROJECT_ROOT / "m0" / "tmp"
+
+# --- Series (batch parsing of whole competitions) ---
+# Default output root; per-series results go to <DEFAULT_OUT_DIR>/<series>/<test>/.
+DEFAULT_OUT_DIR = "out"
+
+# Optional default --data-dir per series, so the source path can be omitted on
+# the CLI. Leave a series out (or None) to require --data-dir explicitly. These
+# are external paths specific to the user's machine; override on the CLI anytime.
+SERIES_DATA_DIRS = {
+    "usamts": None,
+    "purplecomet": None,
+    "mandelbrot": None,
+}
+
+# USAMTS solutions are a per-test PDF. Given a test PDF "<stem>.pdf", the solution
+# PDF is looked for as "<stem><USAMTS_SOLUTION_SUFFIX>.pdf" (first match wins),
+# then as "<stem>.pdf" inside a sibling "solutions/" folder. Adjust to match the
+# real filenames once confirmed.
+USAMTS_SOLUTION_SUFFIX = "_solutions"

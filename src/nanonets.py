@@ -133,14 +133,18 @@ def _clean_text_line(line: str) -> str:
     return _BLANK_RUN_RE.sub("", line).strip()
 
 
-def parse_layout(markdown: str):
+def parse_layout(markdown: str, match_marker=None):
     """Turn Nanonets markdown into an ordered list of items.
 
     Each item is a dict ``{"kind": "text"|"image", "problem": int|None, "text": str}``
     in reading order. ``problem`` is the number of the most recent problem marker
     seen above the item (``None`` for page-header content before problem 1).
     ``text`` is the statement text (markers stripped) or the image description.
+
+    `match_marker` is an optional series-specific marker matcher (see
+    anchors._match_marker); it defaults to the built-in pattern set.
     """
+    match_marker = match_marker or _match_marker
     markdown = _FURNITURE_RE.sub("", markdown)
 
     # Split into alternating text / image tokens, preserving order.
@@ -180,7 +184,7 @@ def parse_layout(markdown: str):
                 continue
             # Match the marker before blank runs are scrubbed, so an answer line's
             # "N. ____ unit" can be told apart from a real statement.
-            match = _match_marker(line)
+            match = match_marker(line)
             if match is not None and (last is None or match[0] > last):
                 # New problem starts here; flush the previous one first.
                 flush()

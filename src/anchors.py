@@ -21,27 +21,34 @@ _PATTERNS = [
 _INLINE_MIN_REMAINDER = 12
 
 
-def strip_leading_marker(text: str) -> str:
+def strip_leading_marker(text: str, match=None) -> str:
     """Remove a leading problem marker ("1.", "Problem 19", "1/3/37.") from OCR
-    output so it doesn't leak into the statement text."""
-    result = _match_marker(text)
+    output so it doesn't leak into the statement text.
+
+    `match` is an optional series-specific matcher (see _match_marker); it
+    defaults to the built-in pattern set.
+    """
+    result = (match or _match_marker)(text)
     if result is None:
         return text
     _, end = result
     return text[end:].lstrip()
 
 
-def _match_marker(text: str):
+def _match_marker(text: str, patterns=_PATTERNS):
     """Return (problem_number, match_end) for the first matching pattern, or None."""
-    for pat in _PATTERNS:
+    for pat in patterns:
         m = pat.match(text)
         if m:
             return int(m.group(m.lastindex)), m.end()
     return None
 
 
-def detect_anchors(detections, page_width):
+def detect_anchors(detections, page_width, match=None):
     """Annotate detections in place and return the list of anchors.
+
+    `match` is an optional callable ``text -> (number, end) | None`` supplied by a
+    series to handle its own numbering quirks; it defaults to _match_marker.
 
     Each detection may gain:
       - "is_anchor": bool
@@ -54,6 +61,7 @@ def detect_anchors(detections, page_width):
     if not detections:
         return []
 
+    match = match or _match_marker
     left_edge = min(d["box"][0] for d in detections)
     left_col_cut = left_edge + config.LEFT_MARGIN_FRAC * page_width
     narrow_cut = config.LEFT_COL_MAX_WIDTH_FRAC * page_width
@@ -64,7 +72,7 @@ def detect_anchors(detections, page_width):
         d["is_anchor"] = False
         d["text_clean"] = text
 
-        result = _match_marker(text)
+        result = match(text)
         problem = None
 
         if result is not None:
