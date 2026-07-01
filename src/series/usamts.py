@@ -154,16 +154,19 @@ class UsamtsSeries(Series):
     def postprocess(self, problems):
         """Drop the trailing submission-instructions/address footer.
 
-        Everything from the ``**************`` separator onward (within whichever
-        problem it landed in) is page furniture, not problem content.
+        The ``**************`` rule marks the end of the *textual* problem set;
+        everything after it (submission instructions, mailing address) is page
+        furniture. Only text is dropped -- image crops are assigned by geometry,
+        not reading order, so a figure attached to the last problem must survive
+        even though it is appended after that problem's text.
         """
         for p in problems:
             kept = []
             cut = False
             for el in p.elements:
-                if cut:
-                    continue  # drop all furniture after the separator
                 if el.kind == "text":
+                    if cut:
+                        continue  # trailing footer text after the separator
                     trimmed = _cut_at_separator(el.text)
                     if trimmed != el.text:
                         el.text = trimmed
