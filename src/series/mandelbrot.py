@@ -38,6 +38,27 @@ _TABLE_MARKUP_ONLY_RE = re.compile(
 # box ends.
 _MAX_ANSWER_LEN = 24
 
+# The solutions PDF closes with a back cover -- a "© Proof School <year>"
+# copyright line, then a PROBLEM/CREDITS table naming each solution's author and
+# publisher boilerplate ("★ REGIONAL LEVEL ★", "Produced by Proof School", the
+# org's website). It shares the last page with the tail of the final solution,
+# so left in, every one of those lines binds to that problem and pollutes its
+# text (and the credits table's "1. ... 7. ..." cells look like stray markers).
+# The copyright line marks the end of real content, so everything from it to the
+# end of the page is dropped. Matched leniently -- the © glyph does not always
+# OCR -- but anchored to a line that *starts* with "Proof School": the copyright
+# line does (after its ©), while the later "Produced by Proof School" line does
+# not, so `search` lands on the true boundary even without the glyph.
+_BACK_COVER_RE = re.compile(
+    r"(?im)^[^\S\n]*(?:©|\(c\)|copyright)?[^\S\n]*proof school\b"
+)
+
+
+def _strip_back_cover(text: str) -> str:
+    """Drop the trailing back-cover boilerplate from a solution page's markdown."""
+    m = _BACK_COVER_RE.search(text)
+    return text[: m.start()].rstrip() if m else text
+
 
 def _is_answer_key_heading(line: str) -> bool:
     """True when `line` carries the "Answer Key" heading.
@@ -137,9 +158,11 @@ class MandelbrotSeries(Series):
         Left in place, the box's out-of-order entries ("4. 12" before "1. 5")
         would be read as problem markers, mis-numbering every solution and
         figure after them. The answers themselves are recovered separately by
-        `parse_answers` from the raw markdown.
+        `parse_answers` from the raw markdown. The symmetric back cover at the
+        document's end (`_strip_back_cover`) is dropped for the same reason: its
+        credits/boilerplate would otherwise trail into the last solution.
         """
-        return _split_answer_key(markdown)[1]
+        return _strip_back_cover(_split_answer_key(markdown)[1])
 
     def parse_answers(self, test, pages_markdown):
         """Read the "Answer Key" box from the first page that carries one."""
