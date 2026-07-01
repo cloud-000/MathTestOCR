@@ -1,18 +1,43 @@
-"""Mandelbrot: scaffold.
+"""Mandelbrot: several tests per season, each with a sibling solution PDF.
 
-Mandelbrot has solutions, but the exact on-disk layout (a single solution PDF vs.
-a solutions folder, and its naming relative to the test) still needs confirming.
-Discovery inherits the default "one PDF per test"; `solution_source` is stubbed.
+On-disk layout (data dir is ``Mandelbrot/out``)::
+
+    out/<season>/tmctest<n>{N,R}.pdf   individual rounds (National / Regional)
+    out/<season>/tmcsoln<n>{N,R}.pdf   their solutions
+    out/<season>/mtptest<n>.pdf        team-play rounds
+    out/<season>/mtpsoln<n>.pdf        their solutions
+    out/<season>/mtptopics<n>.pdf      topic lists (not problems -- skipped)
+
+A test is any ``*test*.pdf`` (id ``<season>_<stem>``, e.g. ``2017-18_tmctest1N``);
+``mtptopics*`` is excluded because it has no ``test`` in the name. The solution is
+the sibling with ``test`` swapped to ``soln``.
 """
 
-from .base import Series
+from pathlib import Path
+
+from .base import Series, Test
 
 
 class MandelbrotSeries(Series):
     name = "mandelbrot"
     has_solutions = True
 
+    def discover_tests(self, data_dir):
+        """One test per ``*test*.pdf`` inside each season folder."""
+        root = Path(data_dir)
+        if not root.is_dir():
+            raise NotADirectoryError(f"data dir not found: {root}")
+        tests = []
+        for season in sorted(p for p in root.iterdir() if p.is_dir()):
+            for pdf in sorted(season.glob("*test*.pdf")):
+                tests.append(Test(id=f"{season.name}_{pdf.stem}", source=pdf))
+        return tests
+
     def solution_source(self, test):
-        # TODO: locate the Mandelbrot solution PDF/folder for `test` once the
-        # naming convention is confirmed, mirroring UsamtsSeries.solution_source.
-        return None
+        """Sibling solution PDF: the test name with ``test`` swapped to ``soln``."""
+        src = test.source
+        sol = src.with_name(src.name.replace("test", "soln"))
+        return sol if sol.exists() else None
+
+    # match_marker stays default: rounds number "1." / "1)" normally. Add an
+    # override here (mirroring UsamtsSeries) if a real run reveals a quirk.

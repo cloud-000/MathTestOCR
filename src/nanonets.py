@@ -182,14 +182,19 @@ def parse_layout(markdown: str, match_marker=None):
             line = raw.strip()
             if not line:
                 continue
-            # Match the marker before blank runs are scrubbed, so an answer line's
-            # "N. ____ unit" can be told apart from a real statement.
-            match = match_marker(line)
+            # Markers can arrive markdown-emphasized ("**1/1/12.**", "*26.*",
+            # "### 5."); strip leading emphasis/heading chars so the matcher sees
+            # the bare marker. Match before blank runs are scrubbed, so an answer
+            # line's "N. ____ unit" can be told apart from a real statement.
+            probe = line.lstrip("*_# ")
+            match = match_marker(probe)
             if match is not None and (last is None or match[0] > last):
                 # New problem starts here; flush the previous one first.
                 flush()
                 current = last = match[0]
-                line = _ANSWER_BLANK_RE.sub("", line[match[1] :].lstrip(), count=1)
+                # Drop the marker and any emphasis closer it left behind ("**").
+                line = probe[match[1] :].lstrip("*_ ")
+                line = _ANSWER_BLANK_RE.sub("", line, count=1)
             line = _clean_text_line(line)
             if not line or _POINTS_ONLY_RE.match(line):
                 continue

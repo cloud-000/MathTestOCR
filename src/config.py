@@ -105,14 +105,18 @@ DEFAULT_OUT_DIR = "out"
 # Optional default --data-dir per series, so the source path can be omitted on
 # the CLI. Leave a series out (or None) to require --data-dir explicitly. These
 # are external paths specific to the user's machine; override on the CLI anytime.
+_MATHTESTS_ROOT = Path("/Users/cloud/MathTests")
 SERIES_DATA_DIRS = {
-    "usamts": None,
-    "purplecomet": None,
-    "mandelbrot": None,
+    "usamts": _MATHTESTS_ROOT / "USAMTS" / "out",
+    "purplecomet": _MATHTESTS_ROOT / "PurpleComet" / "out",
+    "mandelbrot": _MATHTESTS_ROOT / "Mandelbrot" / "out",
+    "mathcounts": _MATHTESTS_ROOT / "Mathcounts" / "out",
 }
 
-# USAMTS solutions are a per-test PDF. Given a test PDF "<stem>.pdf", the solution
-# PDF is looked for as "<stem><USAMTS_SOLUTION_SUFFIX>.pdf" (first match wins),
-# then as "<stem>.pdf" inside a sibling "solutions/" folder. Adjust to match the
-# real filenames once confirmed.
-USAMTS_SOLUTION_SUFFIX = "_solutions"
+# A Mathcounts <year>/<level> folder mixes problem rounds with answer/solution
+# PDFs. Only these round stems are parseable tests; everything else (answers,
+# solutions, stray year booklets) is skipped by discovery.
+MATHCOUNTS_TEST_ROUNDS = {
+    "sprint", "target", "team", "countdown", "cdr",
+    "warmups", "workouts", "masters",
+}

@@ -1,37 +1,57 @@
-"""Purple Comet: scaffold.
+"""Purple Comet: test PDF plus a pre-downloaded answer key.
 
-Purple Comet has no published solutions -- only an *answer key* on a web page
-(URL to be provided). Source-folder format is also TBD; for now it inherits the
-default "one PDF per test" discovery. Two extension points are stubbed:
+On-disk layout (data dir is ``PurpleComet/out``)::
 
-  * scrape_answers -- fetch the answer key from the answers URL and return
-    {problem_number: answer}; the solutions command will write these as
-    ``problem_<n>_answer.txt``.
-  * postprocess -- Purple Comet problem 19 prints nested conditions "1. 2. 3."
-    that the marker logic can mistake for new problems (TODOS.txt); clean that up
-    here once the parsing is exercised on real pages.
+    out/<year>/<division>/test.pdf
+    out/<year>/<division>/answers.txt
+
+so each ``<year>/<division>`` (division is ``MS`` or ``HS``) is one test, id
+``<year>_<division>``. Purple Comet publishes no worked solutions, only an answer
+key -- and the data repo already scraped it into ``answers.txt`` (a TSV with a
+``Problem #\tAnswer`` header), so `scrape_answers` just reads that file: no
+network, no extra deps. The `solutions` command writes these as
+``problem_<n>_answer.txt``.
 """
 
-from .base import Series
+from pathlib import Path
 
-# Filled in once provided, e.g. "https://purplecomet.org/views/data/...".
-ANSWERS_URL = None
+from .base import Series, Test
 
 
 class PurpleCometSeries(Series):
     name = "purplecomet"
-    has_solutions = False  # answers only, fetched from the web (see scrape_answers)
+    has_solutions = False  # no worked solutions -- answer key only (see scrape_answers)
+    has_answers = True
+
+    def discover_tests(self, data_dir):
+        """One test per ``<year>/<division>/test.pdf`` under the data dir."""
+        root = Path(data_dir)
+        if not root.is_dir():
+            raise NotADirectoryError(f"data dir not found: {root}")
+        tests = []
+        for pdf in sorted(root.glob("*/*/test.pdf")):
+            test_id = f"{pdf.parent.parent.name}_{pdf.parent.name}"
+            tests.append(Test(id=test_id, source=pdf))
+        return tests
 
     def scrape_answers(self, test):
-        """Return {problem_number: answer} from the Purple Comet answer key.
-
-        TODO: implement once ANSWERS_URL and the page format are known.
-        """
-        raise NotImplementedError(
-            "Purple Comet answer scraping not implemented yet -- provide ANSWERS_URL"
-        )
+        """Read the sibling ``answers.txt`` (TSV) into {problem_number: answer}."""
+        answers_file = test.source.parent / "answers.txt"
+        if not answers_file.exists():
+            return {}
+        answers = {}
+        for line in answers_file.read_text().splitlines():
+            parts = line.split("\t")
+            if len(parts) != 2:
+                continue
+            number, answer = parts[0].strip(), parts[1].strip()
+            if not number.isdigit():  # skips the "Problem #\tAnswer" header
+                continue
+            answers[int(number)] = answer
+        return answers
 
     def postprocess(self, problems):
         # TODO: merge problem 19's nested "1. 2. 3." conditions back into its
-        # statement instead of treating them as separate problems.
+        # statement instead of treating them as separate problems (needs a real
+        # OCR run to validate the heuristic before implementing).
         return problems

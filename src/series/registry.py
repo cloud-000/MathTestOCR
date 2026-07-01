@@ -1,12 +1,13 @@
 """Series registry: maps a series name to its `Series` instance."""
 
 from .mandelbrot import MandelbrotSeries
+from .mathcounts import MathcountsSeries
 from .purplecomet import PurpleCometSeries
 from .usamts import UsamtsSeries
 
 SERIES = {
     s.name: s
-    for s in (UsamtsSeries(), PurpleCometSeries(), MandelbrotSeries())
+    for s in (UsamtsSeries(), PurpleCometSeries(), MandelbrotSeries(), MathcountsSeries())
 }
 
 

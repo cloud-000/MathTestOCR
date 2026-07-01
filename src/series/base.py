@@ -45,6 +45,7 @@ class Series:
 
     name = "base"
     has_solutions = False
+    has_answers = False
 
     # --- Discovery -------------------------------------------------------
     def discover_tests(self, data_dir):
@@ -84,3 +85,12 @@ class Series:
     def solution_source(self, test: Test):
         """Return the solution source (PDF/folder) for `test`, or None."""
         return None
+
+    def scrape_answers(self, test: Test) -> dict:
+        """Return {problem_number: answer} for `test`, or {} if unavailable.
+
+        The answer-key counterpart to `solution_source`: for series that publish
+        only an answer key (no worked solutions), the `solutions` command writes
+        these as ``problem_<n>_answer.txt``.
+        """
+        return {}

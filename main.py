@@ -142,11 +142,18 @@ def cmd_parse(args):
 
 def cmd_solutions(args):
     series = get_series(args.series)
-    if not series.has_solutions:
+    if series.has_solutions:
+        _cmd_solutions_ocr(args, series)
+    elif series.has_answers:
+        _cmd_answers(args, series)
+    else:
         print(
-            f"[{series.name}] has no solutions (answers only / not yet supported); nothing to do"
+            f"[{series.name}] has no solutions or answers (not yet supported); nothing to do"
         )
-        return
+
+
+def _cmd_solutions_ocr(args, series):
+    """OCR a per-test solution PDF into paired problem_<n>_solution.txt files."""
     data_dir = _resolve_data_dir(series, args.data_dir)
     out_root = Path(args.out) / series.name
 
@@ -175,6 +182,27 @@ def cmd_solutions(args):
             print(f"[{series.name}] wrote {n} solution file(s) -> {dest}")
     finally:
         _close_engine(args.engine, model)
+
+
+def _cmd_answers(args, series):
+    """Write an answer key (no OCR / no model) into problem_<n>_answer.txt files."""
+    data_dir = _resolve_data_dir(series, args.data_dir)
+    out_root = Path(args.out) / series.name
+
+    tests = series.discover_tests(data_dir)
+    print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
+
+    for test in tests:
+        dest = out_root / test.id
+        if (dest / f"problem_1_answer.txt").exists() and not args.force:
+            print(f"[{series.name}] skip {test.id} answers (exist; --force to redo)")
+            continue
+        answers = series.scrape_answers(test)
+        if not answers:
+            print(f"[{series.name}] skip {test.id} (no answers found)")
+            continue
+        n = output.write_solutions(answers, dest, suffix="answer")
+        print(f"[{series.name}] wrote {n} answer file(s) -> {dest}")
 
 
 def cmd_pdf(args):
