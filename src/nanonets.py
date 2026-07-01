@@ -25,6 +25,11 @@ _IMG_RE = re.compile(
 # HTML in the output (both problem statements and solutions). Lazy so adjacent
 # tables don't merge; DOTALL so a table spanning several lines is one match.
 _TABLE_BLOCK_RE = re.compile(r"<table\b.*?</table>", re.IGNORECASE | re.DOTALL)
+# A single row, and its cells, within a table block -- used to look for a
+# problem marker in each row's leading cell (see consume_table in parse_layout).
+_ROW_RE = re.compile(r"<tr\b.*?</tr>", re.IGNORECASE | re.DOTALL)
+_CELL_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
 # Structural table tags. Only applied to text *outside* a recognized table block
 # (a stray or unclosed tag) -- there it is flattened to a line break so raw
 # markup doesn't leak into the statement.
@@ -58,11 +63,19 @@ def _is_runaway(text: str) -> bool:
 
 
 def _close_dangling_img(text: str) -> str:
-    """Repair an ``<img>`` left unterminated by a truncated/aborted stream.
+    """Repair an ``<img>`` the model never closed with ``</img>``.
 
-    The image description is never used (DETR supplies crops by reading-order
-    ordinal), so we drop the partial text and leave a clean empty
-    ``<img></img>`` -- the positional marker survives and still maps to its crop.
+    Two different situations look the same (an opening ``<img`` with no
+    matching close): a genuinely aborted/truncated stream, where nothing
+    follows it and the rest of the page is lost; or the model simply
+    forgetting the closing tag while continuing to transcribe the rest of the
+    page perfectly fine (observed on MATHCOUNTS tables: it wrote a full image
+    description straight into a `<td>` and never closed `<img>` before
+    `</td>`). Truncating unconditionally at the dangling tag -- the old
+    behavior -- silently dropped every problem after it in the second case.
+    We only truncate when nothing follows; otherwise we splice in `</img>`
+    right after the opening tag (dropping the never-used description, same as
+    the truncation case) and keep going.
     """
     idx = text.rfind("<img")
     if idx == -1:
@@ -70,7 +83,14 @@ def _close_dangling_img(text: str) -> str:
     tail = text[idx:]
     if "</img>" in tail.lower() or re.match(r"<img\b[^>]*/>", tail, re.IGNORECASE):
         return text  # properly closed or self-closing
-    return text[:idx] + "<img></img>"
+    m = re.match(r"<img\b[^>]*>", tail, re.IGNORECASE)
+    if not m:
+        return text[:idx] + "<img></img>"  # opening tag itself got cut off
+    content_start = idx + m.end()
+    next_tag = text.find("<", content_start)
+    if next_tag == -1:
+        return text[:idx] + "<img></img>"  # nothing follows -- genuine truncation
+    return text[:content_start] + "</img>" + text[next_tag:]
 
 
 class NanonetsClient:
@@ -202,20 +222,63 @@ def parse_layout(markdown: str, match_marker=None):
                 continue
             buf.append(line)
 
+    def consume_table(html):
+        """Fold a <table>...</table> block in row by row, checking each row's
+        leading cell for a marker.
+
+        MATHCOUNTS answer-blank tables pack many problems into one table
+        ("1. ____ | <statement>", "2. ____ | <statement>", ...), so the marker
+        lives inside a cell rather than before the table. Scanning the whole
+        block as one opaque unit (the old behavior) meant every row silently
+        inherited whatever `current` was before the table -- usually None,
+        which drops the entire table's problems.
+
+        Nanonets renders this exact layout as a table on some pages and as
+        plain "N. ____ statement" lines on others (same content, no visible
+        difference on the page), so a row recognized as a marker row is
+        treated the same as the plain-text case: the marker/blank cell is
+        dropped and only the remaining cells' text is kept, tags stripped --
+        not the raw `<table>` markup, which would otherwise leak into the
+        statement inconsistently depending on which format the model picked.
+        A row whose leading cell does *not* parse as a marker is assumed to be
+        real tabular data belonging to the current problem's statement (e.g. a
+        table of values the problem itself refers to), and is kept verbatim as
+        its own single-row table so that formatting survives.
+        """
+        nonlocal current, last
+        rows = _ROW_RE.findall(html)
+        if not rows:
+            row_html = re.sub(r"\s+", " ", html).strip()
+            if row_html:
+                buf.append(row_html)
+            return
+        for row in rows:
+            cells = _CELL_RE.findall(row)
+            first_cell = _TAG_RE.sub(" ", cells[0]).strip() if cells else ""
+            probe = first_cell.lstrip("*_# ")
+            m = match_marker(probe)
+            if m is not None and (last is None or m[0] > last):
+                flush()
+                current = last = m[0]
+                statement = " ".join(_TAG_RE.sub(" ", c) for c in cells[1:])
+                statement = _clean_text_line(re.sub(r"\s+", " ", statement))
+                if statement:
+                    buf.append(statement)
+                continue
+            buf.append(re.sub(r"\s+", " ", f"<table>{row}</table>").strip())
+
     for kind, payload in tokens:
         if kind == "image":
             flush()
             items.append({"kind": "image", "problem": current, "text": payload})
             continue
 
-        # Keep each <table>...</table> block as verbatim HTML; only the text
-        # around the tables is line-folded and scanned for problem markers.
+        # Keep each <table>...</table> block as HTML; only the text around the
+        # tables (and each row's leading cell) is scanned for problem markers.
         pos = 0
         for tm in _TABLE_BLOCK_RE.finditer(payload):
             consume_lines(payload[pos : tm.start()])
-            html = re.sub(r"\s+", " ", tm.group(0)).strip()
-            if html:
-                buf.append(html)
+            consume_table(tm.group(0))
             pos = tm.end()
         consume_lines(payload[pos:])
     flush()

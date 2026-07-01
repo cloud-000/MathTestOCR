@@ -66,15 +66,26 @@ class Series:
     def test_pages(self, test: Test, workdir):
         """Return page-image paths for `test` in reading order.
 
-        A PDF source is rendered to PNGs in `workdir`; a folder source yields its
-        page images directly.
+        A PDF source is rendered to PNGs in `workdir`, dropping any page
+        `skip_page` rejects; a folder source yields its page images directly
+        (no skip filtering -- there is no embedded text to check cheaply).
         """
         src = Path(test.source)
         if src.is_dir():
             return _natural_pages(src)
         if src.suffix.lower() == ".pdf":
-            return pdf_io.pdf_to_images(src, workdir)
+            return pdf_io.pdf_to_images(src, workdir, skip_page=self.skip_page)
         raise ValueError(f"unsupported test source: {src}")
+
+    def skip_page(self, text: str) -> bool:
+        """Return True to exclude a rendered PDF page from parsing.
+
+        `text` is that page's embedded PDF text (empty for a scanned page with
+        no text layer, in which case the default of keeping the page is the
+        only safe choice). Override to drop cover sheets, instructions pages,
+        or trailing answer-format pages without spending OCR on them.
+        """
+        return False
 
     # --- Numbering quirks ------------------------------------------------
     def match_marker(self):

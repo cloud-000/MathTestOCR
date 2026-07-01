@@ -92,14 +92,23 @@ def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD, 
 
 
 def _sorted_pictures(detections, image):
-    """Non-blank DETR Picture detections, sorted top-to-bottom (reading order)."""
+    """Non-blank, non-page-spanning DETR Picture detections, top-to-bottom."""
+    page_area = image.width * image.height
+    max_area = config.NANONETS_MAX_PICTURE_AREA_FRAC * page_area
     pics = [
         d
         for d in detections
-        if d["label"] == "Picture" and not grouping.is_blank_crop(image, d["box"])
+        if d["label"] == "Picture"
+        and not grouping.is_blank_crop(image, d["box"])
+        and _box_area(d["box"]) <= max_area
     ]
     pics.sort(key=lambda d: (d["box"][1], d["box"][0]))
     return pics
+
+
+def _box_area(box):
+    x0, y0, x1, y1 = box
+    return max(0, x1 - x0) * max(0, y1 - y0)
 
 
 def _problem_start_ys(detections, image):
@@ -128,6 +137,44 @@ def _problem_start_ys(detections, image):
     return starts
 
 
+def _gap_based_starts(detections, image, n):
+    """Split all non-blank text content into exactly `n` top-to-bottom bands.
+
+    Fallback for when `_problem_start_ys`'s left-margin heuristic mis-counts --
+    e.g. a problem's own number/blank box scored just under the detection
+    threshold, so it never became a left-margin candidate and that problem's
+    start silently disappeared (its statement box, further right, doesn't
+    qualify either). Nanonets' own count of problems on the page (`n`) is
+    reliable, so instead: merge every candidate box into non-overlapping
+    vertical intervals and cut at the `n - 1` largest gaps between them,
+    regardless of x-position. Returns `n` y_top values, or fewer if there
+    isn't enough distinct content to split.
+    """
+    cand = [
+        d
+        for d in detections
+        if d["label"] in config.TEXT_LABELS and not grouping.is_blank_crop(image, d["box"])
+    ]
+    if not cand:
+        return []
+    intervals = sorted((d["box"][1], d["box"][3]) for d in cand)
+    merged = [intervals[0]]
+    for y0, y1 in intervals[1:]:
+        if y0 <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], y1))
+        else:
+            merged.append((y0, y1))
+    if len(merged) <= n:
+        return [y0 for y0, _ in merged]
+    gaps = sorted(
+        range(len(merged) - 1), key=lambda i: merged[i + 1][0] - merged[i][1], reverse=True
+    )
+    cut_after = sorted(gaps[: n - 1])
+    starts = [merged[0][0]]
+    starts.extend(merged[i + 1][0] for i in cut_after)
+    return starts
+
+
 def _assign_pictures(detections, image, problem_seq):
     """Map each non-blank DETR Picture to a problem number by vertical position.
 
@@ -145,6 +192,8 @@ def _assign_pictures(detections, image, problem_seq):
         # No usable text geometry: keep every figure, on the first problem.
         groups[problem_seq[0]] = list(pics)
         return groups
+    if len(starts) != len(problem_seq):
+        starts = _gap_based_starts(detections, image, len(problem_seq)) or starts
     if len(starts) != len(problem_seq):
         print(
             f"[nanonets] problem-count mismatch: {len(problem_seq)} problem(s) from "

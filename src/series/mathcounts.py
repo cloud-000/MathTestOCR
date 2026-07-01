@@ -33,10 +33,25 @@ from .base import Series, Test
 _LEADING_BLANK_RE = re.compile(r"^_+\s*")
 _LEADING_UNIT_RE = re.compile(r"^(?:[a-z][\w°²³./-]*\s+){1,3}(?=[A-Z(])")
 
+# Boilerplate that marks a page as having no problems worth parsing: the cover
+# sheet in front of every round, the divider MATHCOUNTS reprints before each
+# pair of Target Round problems ("every other page" in that round), and the
+# Forms of Answers page some rounds append at the end. All three carry this
+# exact instructional text regardless of year/level, so a plain substring
+# check on the PDF's own text layer is enough -- no OCR needed to skip them.
+_SKIP_PAGE_PHRASES = ("do not begin until you are instructed", "forms of answers")
+
 
 class MathcountsSeries(Series):
     name = "mathcounts"
     has_solutions = False  # shared per-level solutions.pdf/answers.pdf -- see module docstring
+
+    def skip_page(self, text):
+        # Older booklets double-space this boilerplate ("DO  NOT  BEGIN...")
+        # and can wrap it across a line break; collapse all whitespace runs
+        # (including newlines) to a single space before matching.
+        collapsed = re.sub(r"\s+", " ", text).strip().lower()
+        return any(phrase in collapsed for phrase in _SKIP_PAGE_PHRASES)
 
     def discover_tests(self, data_dir):
         """One test per whitelisted ``<year>/<level>/<round>.pdf``."""

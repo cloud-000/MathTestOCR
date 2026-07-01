@@ -8,6 +8,7 @@ test.py
 __init__.py
 mlxWrapper.py
 CLAUDE.md
+.claude
 AGENTS.md
 GEMINI.md
 tmp

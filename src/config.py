@@ -57,6 +57,14 @@ NANONETS_REPEAT_COUNT = 4
 # to exclude centered headers ("Each problem is worth 5 points.") and footers.
 NANONETS_START_X_TOL_FRAC = 0.02
 
+# A DETR "Picture" covering more than this fraction of the page area is almost
+# certainly a whole-page layout misclassification, not a real figure (seen on
+# dense text pages: a low-confidence box spanning nearly the entire page).
+# Real MATHCOUNTS/USAMTS diagrams are small inset figures next to a problem's
+# text, nowhere near this large. Filtered out before figure->problem assignment
+# so it can't get glued onto some unlucky problem as a bogus "image".
+NANONETS_MAX_PICTURE_AREA_FRAC = 0.5
+
 # --- Detection ---
 DETECT_THRESHOLD = 0.6
 
