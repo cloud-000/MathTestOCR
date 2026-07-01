@@ -21,7 +21,13 @@ from .anchors import _match_marker
 _IMG_RE = re.compile(
     r"<img\b[^>]*>(.*?)</img>|<img\b[^>]*/?>", re.IGNORECASE | re.DOTALL
 )
-# Structural HTML that wraps layout/data tables -- flattened to line breaks.
+# A whole <table>...</table> block. Kept verbatim so tabular data survives as
+# HTML in the output (both problem statements and solutions). Lazy so adjacent
+# tables don't merge; DOTALL so a table spanning several lines is one match.
+_TABLE_BLOCK_RE = re.compile(r"<table\b.*?</table>", re.IGNORECASE | re.DOTALL)
+# Structural table tags. Only applied to text *outside* a recognized table block
+# (a stray or unclosed tag) -- there it is flattened to a line break so raw
+# markup doesn't leak into the statement.
 _TABLE_TAG_RE = re.compile(r"</?(?:table|thead|tbody|tr|td|th)\b[^>]*>", re.IGNORECASE)
 # Page furniture the prompt asks the model to tag.
 _FURNITURE_RE = re.compile(
@@ -171,13 +177,14 @@ def parse_layout(markdown: str, match_marker=None):
         if text:
             items.append({"kind": "text", "problem": current, "text": text})
 
-    for kind, payload in tokens:
-        if kind == "image":
-            flush()
-            items.append({"kind": "image", "problem": current, "text": payload})
-            continue
+    def consume_lines(chunk):
+        """Fold a run of plain text (no whole table block) into buf.
 
-        text = _TABLE_TAG_RE.sub("\n", payload)
+        Handles marker detection and per-line cleanup; any stray/unclosed table
+        tag left in `chunk` is flattened to a line break.
+        """
+        nonlocal current, last
+        text = _TABLE_TAG_RE.sub("\n", chunk)
         for raw in text.splitlines():
             line = raw.strip()
             if not line:
@@ -199,5 +206,22 @@ def parse_layout(markdown: str, match_marker=None):
             if not line or _POINTS_ONLY_RE.match(line):
                 continue
             buf.append(line)
+
+    for kind, payload in tokens:
+        if kind == "image":
+            flush()
+            items.append({"kind": "image", "problem": current, "text": payload})
+            continue
+
+        # Keep each <table>...</table> block as verbatim HTML; only the text
+        # around the tables is line-folded and scanned for problem markers.
+        pos = 0
+        for tm in _TABLE_BLOCK_RE.finditer(payload):
+            consume_lines(payload[pos : tm.start()])
+            html = re.sub(r"\s+", " ", tm.group(0)).strip()
+            if html:
+                buf.append(html)
+            pos = tm.end()
+        consume_lines(payload[pos:])
     flush()
     return items
