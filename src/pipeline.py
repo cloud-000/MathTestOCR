@@ -106,6 +106,7 @@ def _sorted_pictures(detections, image, max_area_frac=None):
     if max_area_frac is not None:
         max_area = max_area_frac * image.width * image.height
         pics = [d for d in pics if _box_area(d["box"]) <= max_area]
+    pics = _drop_nested_pictures(pics)
     pics.sort(key=lambda d: (d["box"][1], d["box"][0]))
     return pics
 
@@ -115,19 +116,58 @@ def _box_area(box):
     return max(0, x1 - x0) * max(0, y1 - y0)
 
 
-def _problem_start_ys(detections, image):
+def _contained_frac(inner, outer):
+    """Fraction of `inner`'s area that lies inside `outer`."""
+    ix0, iy0 = max(inner[0], outer[0]), max(inner[1], outer[1])
+    ix1, iy1 = min(inner[2], outer[2]), min(inner[3], outer[3])
+    inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+    area = _box_area(inner)
+    return inter / area if area else 0.0
+
+
+def _drop_nested_pictures(pics):
+    """Drop each Picture nested inside a strictly larger one (keep the enclosing).
+
+    DETR frequently returns both a figure group and its individual panels; a
+    problem should get one crop of the whole figure, not the whole plus each
+    part (see config.NESTED_PICTURE_FRAC).
+    """
+    kept = []
+    for d in pics:
+        da = _box_area(d["box"])
+        nested = any(
+            o is not d
+            and _box_area(o["box"]) > da
+            and _contained_frac(d["box"], o["box"]) >= config.NESTED_PICTURE_FRAC
+            for o in pics
+        )
+        if not nested:
+            kept.append(d)
+    return kept
+
+
+def _problem_start_ys(detections, image, headers_only=False):
     """Vertical positions where problems start, from DETR's left-margin text boxes.
 
     A content text box whose left edge sits at the page's left text margin begins
     a problem (its statement/number). Centered headers and indented continuation
     lines start further right and are excluded; boxes on the same row are merged.
     Returns the start y_top values sorted top-to-bottom.
+
+    `headers_only` restricts the candidates to heading boxes (config.HEADER_LABELS):
+    for series whose problem number sits on its own heading line, the statement
+    below it is a separate left-margin box and would otherwise be counted as a
+    second start (see LayoutOptions.problem_start_from_headers). Falls back to the
+    full text-box scan if the page has no left-margin heading.
     """
+    labels = config.HEADER_LABELS if headers_only else config.TEXT_LABELS
     cand = [
         d
         for d in detections
-        if d["label"] in config.TEXT_LABELS and not grouping.is_blank_crop(image, d["box"])
+        if d["label"] in labels and not grouping.is_blank_crop(image, d["box"])
     ]
+    if not cand and headers_only:
+        return _problem_start_ys(detections, image)
     if not cand:
         return []
     left = min(d["box"][0] for d in cand)
@@ -194,7 +234,7 @@ def _assign_pictures(detections, image, problem_seq, layout):
     pics = _sorted_pictures(detections, image, layout.max_picture_area_frac)
     if not pics or not problem_seq:
         return {}
-    starts = _problem_start_ys(detections, image)
+    starts = _problem_start_ys(detections, image, layout.problem_start_from_headers)
     groups = {}
     if not starts:
         # No usable text geometry: keep every figure, on the first problem.

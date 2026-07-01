@@ -15,6 +15,7 @@ network, no extra deps. The `solutions` command writes these as
 
 from pathlib import Path
 
+from .. import config
 from .base import Series, Test
 
 
@@ -22,6 +23,13 @@ class PurpleCometSeries(Series):
     name = "purplecomet"
     has_solutions = False  # no worked solutions -- answer key only (see scrape_answers)
     has_answers = True
+
+    def layout_options(self):
+        # Purple Comet prints each problem number on its own "Problem N" heading
+        # line above the statement, so DETR sees two left-margin boxes per problem.
+        # Take the problem start from the heading alone, or figure assignment
+        # drifts down the page (a problem-3 figure lands on problem 6).
+        return config.LayoutOptions(problem_start_from_headers=True)
 
     def discover_tests(self, data_dir):
         """One test per ``<year>/<division>/test.pdf`` under the data dir."""

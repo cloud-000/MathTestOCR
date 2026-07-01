@@ -87,10 +87,19 @@ def _close_dangling_img(text: str) -> str:
     if not m:
         return text[:idx] + "<img></img>"  # opening tag itself got cut off
     content_start = idx + m.end()
-    next_tag = text.find("<", content_start)
-    if next_tag == -1:
+    # The (always-discarded) description runs until real page content resumes:
+    # the next tag, or a blank-line paragraph break -- whichever comes first.
+    # Everything from there on is kept. Anchoring only on the next tag drops the
+    # rest of the page when the following problem is plain text/LaTeX with no
+    # markup (e.g. the model wrote "<img>\n\n**Problem 30** ...$\sqrt{m}-n$").
+    rest = text[content_start:]
+    tag_at = rest.find("<")
+    para = re.search(r"\n[ \t]*\n", rest)
+    para_at = para.start() if para else -1
+    cuts = [p for p in (tag_at, para_at) if p != -1]
+    if not cuts:
         return text[:idx] + "<img></img>"  # nothing follows -- genuine truncation
-    return text[:content_start] + "</img>" + text[next_tag:]
+    return text[:content_start] + "</img>" + rest[min(cuts):]
 
 
 class NanonetsClient:

@@ -17,6 +17,11 @@ def write_problems(problems, dest):
     """
     out = Path(dest)
     out.mkdir(parents=True, exist_ok=True)
+    # Image crops are fully regenerated below; clear any from a prior parse so a
+    # figure that moved to a different problem doesn't leave a stale crop behind
+    # (e.g. an old problem_6_image_1.png after it's reassigned to problem 3).
+    for stale in out.glob("problem_*_image_*.png"):
+        stale.unlink()
     for p in problems:
         text = p.text
         if text.strip():

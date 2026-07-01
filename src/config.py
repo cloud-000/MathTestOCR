@@ -75,6 +75,14 @@ NANONETS_START_X_TOL_FRAC = 0.02
 # Picture (max_picture_area_frac=None).
 NANONETS_MAX_PICTURE_AREA_FRAC = 0.5
 
+# When DETR detects both a figure group and its individual panels, a Picture
+# whose area is at least this fraction covered by a larger Picture is a nested
+# duplicate and dropped, keeping only the enclosing crop (e.g. Purple Comet
+# problem 29's "four patterns" strip: one wide box plus one box per panel).
+# Applied for every series -- a figure and its own sub-panels are never both
+# wanted as separate crops.
+NESTED_PICTURE_FRAC = 0.9
+
 
 @dataclass(frozen=True)
 class LayoutOptions:
@@ -102,6 +110,14 @@ class LayoutOptions:
     # into one answer-blank table). Off by default: other series' tables are
     # real tabular data, kept verbatim as HTML.
     split_marker_table_rows: bool = False
+    # Take each problem's start position from its left-margin heading box alone
+    # (see config.HEADER_LABELS), ignoring the statement/body text below it. On
+    # by default a problem whose number sits on its own heading line (e.g. Purple
+    # Comet's "Problem N") counts twice in the left-margin scan -- once for the
+    # heading, once for the statement -- doubling the start count and drifting
+    # figure assignment. Off by default: series whose numbers are inline with the
+    # statement have no separate heading and rely on the body text as the start.
+    problem_start_from_headers: bool = False
     # Sampling temperature for the whole-page OCR pass. Defaults to the greedy
     # NANONETS_TEMPERATURE (0.0); a series raises it slightly only when greedy
     # decoding loops on its pages (e.g. Mandelbrot grids that make the model
@@ -137,6 +153,10 @@ JUNK_LABELS = {"Page-header", "Page-footer", "Footnote"}
 
 # DETR classes we treat as text to OCR (everything else is kept as an image crop).
 TEXT_LABELS = {"Text", "Formula", "List-item", "Section-header", "Title", "Caption"}
+
+# DETR classes that are a problem's heading line (its number), used as the
+# problem-start signal when LayoutOptions.problem_start_from_headers is set.
+HEADER_LABELS = {"Section-header", "Title"}
 
 # Picture-like classes kept as image crops.
 IMAGE_LABELS = {"Picture", "Table"}
