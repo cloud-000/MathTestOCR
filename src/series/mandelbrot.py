@@ -15,12 +15,24 @@ the sibling with ``test`` swapped to ``soln``.
 
 from pathlib import Path
 
+from .. import config
 from .base import Series, Test
 
 
 class MandelbrotSeries(Series):
     name = "mandelbrot"
     has_solutions = True
+
+    def layout_options(self):
+        """Nudge the OCR temperature off greedy for Mandelbrot's grid pages.
+
+        Greedy decoding (temperature 0.0) sometimes gets stuck repeating a
+        ``<table>`` row when a page shows a grid/diagram, blowing past the
+        runaway guard or padding the transcription. A small bump breaks the loop
+        while keeping transcription faithful; the layout heuristics stay at the
+        conservative base defaults. Raise further only if grids still loop.
+        """
+        return config.LayoutOptions(nanonets_temperature=0.1)
 
     def discover_tests(self, data_dir):
         """One test per ``*test*.pdf`` inside each season folder."""

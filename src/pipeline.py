@@ -251,10 +251,11 @@ def process_image_nanonets(
     detections = detect.detect(image, threshold)
     print("[nanonets] Layout detection done.")
     print("[nanonets] Running whole-page OCR (Nanonets)...")
+    temp = layout.nanonets_temperature
     if cache is not None:
-        markdown = cache.page_markdown(image_path, lambda: client.parse_page(image))
+        markdown = cache.page_markdown(image_path, lambda: client.parse_page(image, temp))
     else:
-        markdown = client.parse_page(image)
+        markdown = client.parse_page(image, temp)
     print("[nanonets] Nanonets OCR done.")
     items = nanonets_mod.parse_layout(
         markdown, match_marker, split_marker_table_rows=layout.split_marker_table_rows
@@ -326,7 +327,7 @@ def process_test(page_paths, engine, model, threshold=None, match=None, cache=No
     return [merged[n] for n in sorted(merged)]
 
 
-def ocr_pages_markdown(page_paths, client, cache=None):
+def ocr_pages_markdown(page_paths, client, cache=None, layout=None):
     """Whole-page OCR of every page to markdown, concatenated in reading order.
 
     Unlike `process_test`, this runs no layout detection and does no problem
@@ -334,14 +335,17 @@ def ocr_pages_markdown(page_paths, client, cache=None):
     document. Used by the series solution parser (`Series.parse_solutions`),
     which segments the concatenated text itself. `client` is a NanonetsClient.
     `cache` is an optional OCRCache serving / storing each page's markdown.
+    `layout` is the series' LayoutOptions (only its OCR temperature is used here).
     """
+    layout = layout or config.LayoutOptions()
+    temp = layout.nanonets_temperature
     parts = []
     for path in page_paths:
         if cache is not None:
             markdown = cache.page_markdown(
-                path, lambda p=path: client.parse_page(Image.open(p).convert("RGB"))
+                path, lambda p=path: client.parse_page(Image.open(p).convert("RGB"), temp)
             )
         else:
-            markdown = client.parse_page(Image.open(path).convert("RGB"))
+            markdown = client.parse_page(Image.open(path).convert("RGB"), temp)
         parts.append(markdown)
     return "\n\n".join(parts)

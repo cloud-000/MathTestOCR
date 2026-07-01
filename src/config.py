@@ -20,6 +20,14 @@ NANONETS_MODEL = None  # None -> auto-detect via GET /v1/models (first id)
 # grid diagram), while 0.5 catches them without admitting page-spanning junk.
 NANONETS_DETECT_THRESHOLD = 0.5
 
+# Sampling temperature for the whole-page OCR. 0.0 is greedy/deterministic and
+# the right default for faithful transcription. A series may nudge this up via
+# its LayoutOptions (see `LayoutOptions.nanonets_temperature`) when greedy
+# decoding degenerates on its pages -- e.g. Mandelbrot grids where the model
+# gets stuck repeating a <table> row. Keep it as low as still works: higher
+# temperatures trade transcription fidelity for loop-breaking.
+NANONETS_TEMPERATURE = 0.0
+
 # Standard Nanonets-OCR prompt. The <img></img> tags it emits at each figure's
 # location (in reading order) are what lets us map DETR crops to problems, so do
 # not drop the image-description instruction.
@@ -94,6 +102,12 @@ class LayoutOptions:
     # into one answer-blank table). Off by default: other series' tables are
     # real tabular data, kept verbatim as HTML.
     split_marker_table_rows: bool = False
+    # Sampling temperature for the whole-page OCR pass. Defaults to the greedy
+    # NANONETS_TEMPERATURE (0.0); a series raises it slightly only when greedy
+    # decoding loops on its pages (e.g. Mandelbrot grids that make the model
+    # repeat a <table> row). Higher values trade transcription fidelity for
+    # loop-breaking, so keep it as low as still works.
+    nanonets_temperature: float = NANONETS_TEMPERATURE
 
 # --- Detection ---
 DETECT_THRESHOLD = 0.6

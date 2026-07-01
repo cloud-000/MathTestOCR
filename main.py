@@ -210,7 +210,9 @@ def _cmd_solutions_ocr(args, series):
                 pages = series.test_pages(Test(id=test.id, source=sol), workdir)
                 if use_series_parser:
                     solutions = series.parse_solutions(
-                        ocr_pages_markdown(pages, model, cache=cache)
+                        ocr_pages_markdown(
+                            pages, model, cache=cache, layout=series.layout_options()
+                        )
                     )
                 else:
                     problems = process_test(

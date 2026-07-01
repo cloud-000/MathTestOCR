@@ -111,14 +111,20 @@ class NanonetsClient:
             self._model = self._client.models.list().data[0].id
         return self._model
 
-    def parse_page(self, image: Image.Image) -> str:
-        """Return the raw markdown transcription of a whole page image."""
+    def parse_page(self, image: Image.Image, temperature: float = config.NANONETS_TEMPERATURE) -> str:
+        """Return the raw markdown transcription of a whole page image.
+
+        `temperature` defaults to the greedy `config.NANONETS_TEMPERATURE` (0.0)
+        for deterministic, faithful transcription; a series can raise it via its
+        LayoutOptions when greedy decoding loops on its pages (see
+        `config.LayoutOptions.nanonets_temperature`).
+        """
         buf = io.BytesIO()
         image.convert("RGB").save(buf, format="PNG")
         url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
         resp = self._client.chat.completions.create(
             model=self.model,
-            temperature=0.0,  # greedy: deterministic, faithful transcription
+            temperature=temperature,
             max_tokens=config.NANONETS_MAX_TOKENS,
             messages=[
                 {
