@@ -8,6 +8,7 @@ Examples:
     # Whole competition: discover tests, parse new ones into out/<series>/<test>/
     python main.py parse --series usamts --data-dir /path/to/usamts
     python main.py parse --series usamts --data-dir /path/to/usamts --force
+    python main.py parse --series mathcounts --test 2025_state_sprint
 
     # Scrape solutions alongside the parsed problems
     python main.py solutions --series usamts --data-dir /path/to/usamts
@@ -68,6 +69,19 @@ def _resolve_data_dir(series, data_dir):
     return dd
 
 
+def _select_tests(series, tests, test_id):
+    """Filter discovered tests to an exact `--test` id, if given."""
+    if test_id is None:
+        return tests
+    selected = [t for t in tests if t.id == test_id]
+    if not selected:
+        available = ", ".join(t.id for t in tests) or "(none)"
+        raise SystemExit(
+            f"[{series.name}] no test '{test_id}' found; available: {available}"
+        )
+    return selected
+
+
 def _parse_one_test(series, test, engine, model, threshold, cache=None):
     """Render a test to pages and parse them into a merged, post-processed list."""
     match = series.match_marker()
@@ -84,6 +98,7 @@ def _cmd_parse_batch(args):
 
     tests = series.discover_tests(data_dir)
     print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
+    tests = _select_tests(series, tests, args.test)
     if not tests:
         return
 
@@ -168,6 +183,7 @@ def _cmd_solutions_ocr(args, series):
 
     tests = series.discover_tests(data_dir)
     print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
+    tests = _select_tests(series, tests, args.test)
     match = series.match_marker()
     # A series can claim its whole solution document instead of the per-page
     # marker pipeline (see Series.parse_solutions). Only the nanonets engine
@@ -212,6 +228,7 @@ def _cmd_answers(args, series):
 
     tests = series.discover_tests(data_dir)
     print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
+    tests = _select_tests(series, tests, args.test)
 
     for test in tests:
         dest = out_root / test.id
@@ -268,6 +285,9 @@ def main():
     )
     p_parse.add_argument("--data-dir", help="external source dir for the series")
     p_parse.add_argument(
+        "--test", help="only parse this test id (exact match, e.g. 2025_state_sprint)"
+    )
+    p_parse.add_argument(
         "--force", action="store_true", help="re-parse tests even if already present"
     )
     p_parse.add_argument("--debug", action="store_true", help="save annotated overlay (single image)")
@@ -277,6 +297,9 @@ def main():
     p_sol = sub.add_parser("solutions", help="scrape per-problem solutions for a series")
     p_sol.add_argument("--series", required=True, choices=series_names())
     p_sol.add_argument("--data-dir", help="external source dir for the series")
+    p_sol.add_argument(
+        "--test", help="only scrape this test id (exact match, e.g. 2025_state_sprint)"
+    )
     p_sol.add_argument(
         "--force", action="store_true", help="re-scrape even if solution files exist"
     )

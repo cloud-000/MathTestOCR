@@ -16,10 +16,22 @@ OCR run to inspect the alignment first. Until then `has_solutions` is False and
 the `solutions` command cleanly skips this series.
 """
 
+import re
 from pathlib import Path
 
 from .. import config
 from .base import Series, Test
+
+# MATHCOUNTS fill-in-the-blank problems print "____ cm" or "____ factors" (a
+# blank plus an optional unit) right after the problem number, before the
+# statement itself ("In the figure, ..."). Both engines already strip the
+# printed problem number and collapse the blank rule; what is left dangling at
+# the front of the statement is just the unit word(s). Strip the blank run
+# first (in case an engine left literal underscores behind), then up to a few
+# lowercase unit words -- but only when a capitalized statement follows, so a
+# blank-less problem's real text is never touched.
+_LEADING_BLANK_RE = re.compile(r"^_+\s*")
+_LEADING_UNIT_RE = re.compile(r"^(?:[a-z][\w°²³./-]*\s+){1,3}(?=[A-Z(])")
 
 
 class MathcountsSeries(Series):
@@ -38,3 +50,14 @@ class MathcountsSeries(Series):
             test_id = f"{pdf.parent.parent.name}_{pdf.parent.name}_{pdf.stem}"
             tests.append(Test(id=test_id, source=pdf))
         return tests
+
+    def postprocess(self, problems):
+        """Drop the leaked answer-blank unit from each problem's first text element."""
+        for problem in problems:
+            for element in problem.elements:
+                if element.kind != "text":
+                    continue
+                text = _LEADING_BLANK_RE.sub("", element.text)
+                element.text = _LEADING_UNIT_RE.sub("", text)
+                break
+        return problems

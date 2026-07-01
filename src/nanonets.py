@@ -36,10 +36,6 @@ _FURNITURE_RE = re.compile(
 )
 _POINTS_ONLY_RE = re.compile(r"^\(\s*\d+\s*\)$")  # "(1)" point-value cells
 _BLANK_RUN_RE = re.compile(r"_{2,}")  # answer blanks: "________"
-# MATHCOUNTS answer line: after the problem number comes a blank to fill plus an
-# optional unit ("26. ____ cm In the figure..."). Strip the blank and any
-# lowercase unit words so they don't lead the statement (which starts uppercase).
-_ANSWER_BLANK_RE = re.compile(r"^_{2,}\s*(?:[a-z]+\s+)*")
 
 # Chars that legitimately repeat in layout (answer blanks, dotted leaders, rules).
 # A tail made only of these is filler, not a generation loop.
@@ -201,7 +197,6 @@ def parse_layout(markdown: str, match_marker=None):
                 current = last = match[0]
                 # Drop the marker and any emphasis closer it left behind ("**").
                 line = probe[match[1] :].lstrip("*_ ")
-                line = _ANSWER_BLANK_RE.sub("", line, count=1)
             line = _clean_text_line(line)
             if not line or _POINTS_ONLY_RE.match(line):
                 continue
