@@ -118,7 +118,7 @@ class NanonetsClient:
         url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
         resp = self._client.chat.completions.create(
             model=self.model,
-            temperature=0,  # greedy: deterministic, faithful transcription
+            temperature=0.0,  # greedy: deterministic, faithful transcription
             max_tokens=config.NANONETS_MAX_TOKENS,
             messages=[
                 {
@@ -155,7 +155,7 @@ def _clean_text_line(line: str) -> str:
     return _BLANK_RUN_RE.sub("", line).strip()
 
 
-def parse_layout(markdown: str, match_marker=None):
+def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False):
     """Turn Nanonets markdown into an ordered list of items.
 
     Each item is a dict ``{"kind": "text"|"image", "problem": int|None, "text": str}``
@@ -165,6 +165,13 @@ def parse_layout(markdown: str, match_marker=None):
 
     `match_marker` is an optional series-specific marker matcher (see
     anchors._match_marker); it defaults to the built-in pattern set.
+
+    `split_marker_table_rows` is a series-scoped opt-in (see
+    config.LayoutOptions): when True, a ``<table>`` block is folded in row by row
+    and any row whose leading cell is a problem marker is rewritten to plain
+    statement text (MATHCOUNTS answer-blank tables). When False (the default),
+    every table block is kept verbatim as HTML -- the right choice for series
+    whose tables are genuine tabular data, not packed problem lists.
     """
     match_marker = match_marker or _match_marker
     markdown = _FURNITURE_RE.sub("", markdown)
@@ -274,11 +281,19 @@ def parse_layout(markdown: str, match_marker=None):
             continue
 
         # Keep each <table>...</table> block as HTML; only the text around the
-        # tables (and each row's leading cell) is scanned for problem markers.
+        # tables is scanned for problem markers. When a series opts into
+        # `split_marker_table_rows`, each row's leading cell is scanned too and
+        # marker rows are unpacked into plain statements (see consume_table);
+        # otherwise the whole block is kept verbatim.
         pos = 0
         for tm in _TABLE_BLOCK_RE.finditer(payload):
             consume_lines(payload[pos : tm.start()])
-            consume_table(tm.group(0))
+            if split_marker_table_rows:
+                consume_table(tm.group(0))
+            else:
+                html = re.sub(r"\s+", " ", tm.group(0)).strip()
+                if html:
+                    buf.append(html)
             pos = tm.end()
         consume_lines(payload[pos:])
     flush()

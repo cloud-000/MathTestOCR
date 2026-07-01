@@ -91,17 +91,21 @@ def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD, 
     return problems, detections, groups
 
 
-def _sorted_pictures(detections, image):
-    """Non-blank, non-page-spanning DETR Picture detections, top-to-bottom."""
-    page_area = image.width * image.height
-    max_area = config.NANONETS_MAX_PICTURE_AREA_FRAC * page_area
+def _sorted_pictures(detections, image, max_area_frac=None):
+    """Non-blank DETR Picture detections, top-to-bottom (reading order).
+
+    `max_area_frac` (from a series' LayoutOptions) optionally drops any Picture
+    covering more than that fraction of the page -- a whole-page layout
+    misclassification. None (the default) keeps every non-blank Picture.
+    """
     pics = [
         d
         for d in detections
-        if d["label"] == "Picture"
-        and not grouping.is_blank_crop(image, d["box"])
-        and _box_area(d["box"]) <= max_area
+        if d["label"] == "Picture" and not grouping.is_blank_crop(image, d["box"])
     ]
+    if max_area_frac is not None:
+        max_area = max_area_frac * image.width * image.height
+        pics = [d for d in pics if _box_area(d["box"]) <= max_area]
     pics.sort(key=lambda d: (d["box"][1], d["box"][0]))
     return pics
 
@@ -175,15 +179,19 @@ def _gap_based_starts(detections, image, n):
     return starts
 
 
-def _assign_pictures(detections, image, problem_seq):
+def _assign_pictures(detections, image, problem_seq, layout):
     """Map each non-blank DETR Picture to a problem number by vertical position.
 
     `problem_seq` is the ordered list of problem numbers (top-to-bottom). Each
     picture is assigned to the problem whose start is the lowest one at or above
     the picture's vertical centre; pictures above the first problem (page logos)
     are dropped. Returns {problem_number: [picture_det, ...]}.
+
+    `layout` is the series' LayoutOptions: it controls the page-spanning Picture
+    filter (`max_picture_area_frac`) and whether the gap-based problem-start
+    fallback is used when DETR's left-margin count disagrees with nanonets'.
     """
-    pics = _sorted_pictures(detections, image)
+    pics = _sorted_pictures(detections, image, layout.max_picture_area_frac)
     if not pics or not problem_seq:
         return {}
     starts = _problem_start_ys(detections, image)
@@ -192,7 +200,7 @@ def _assign_pictures(detections, image, problem_seq):
         # No usable text geometry: keep every figure, on the first problem.
         groups[problem_seq[0]] = list(pics)
         return groups
-    if len(starts) != len(problem_seq):
+    if len(starts) != len(problem_seq) and layout.gap_based_picture_fallback:
         starts = _gap_based_starts(detections, image, len(problem_seq)) or starts
     if len(starts) != len(problem_seq):
         print(
@@ -220,6 +228,7 @@ def process_image_nanonets(
     threshold=config.NANONETS_DETECT_THRESHOLD,
     match_marker=None,
     cache=None,
+    layout=None,
 ):
     """Whole-page OCR via the nanonets engine; DETR supplies the image crops.
 
@@ -232,8 +241,10 @@ def process_image_nanonets(
     `match_marker` is an optional series-specific marker matcher for
     competition-specific numbering quirks. `cache` is an optional OCRCache: when
     given, the (slow) whole-page OCR is served from / written to it, while DETR
-    detection still runs every time.
+    detection still runs every time. `layout` is the series' LayoutOptions (its
+    table/figure heuristic knobs); None uses the conservative defaults.
     """
+    layout = layout or config.LayoutOptions()
     print("[nanonets] Starting pipeline...")
     image = Image.open(image_path).convert("RGB")
     print("[nanonets] Running layout detection (DETR)...")
@@ -245,7 +256,9 @@ def process_image_nanonets(
     else:
         markdown = client.parse_page(image)
     print("[nanonets] Nanonets OCR done.")
-    items = nanonets_mod.parse_layout(markdown, match_marker)
+    items = nanonets_mod.parse_layout(
+        markdown, match_marker, split_marker_table_rows=layout.split_marker_table_rows
+    )
 
     print("[nanonets] Assembling problems...")
     problems = {}  # number -> Problem, insertion-ordered (numbers increase)
@@ -270,7 +283,7 @@ def process_image_nanonets(
             prob.elements.append(ProblemElement("text", "Text", [], text=text))
 
     # Geometric figure assignment from DETR.
-    groups = _assign_pictures(detections, image, problem_seq)
+    groups = _assign_pictures(detections, image, problem_seq, layout)
     for number in sorted(groups):
         prob = problem_for(number)
         for pic in groups[number]:
@@ -283,7 +296,7 @@ def process_image_nanonets(
     return [problems[n] for n in sorted(problems)], detections, groups
 
 
-def process_test(page_paths, engine, model, threshold=None, match=None, cache=None):
+def process_test(page_paths, engine, model, threshold=None, match=None, cache=None, layout=None):
     """Parse every page of a multi-page test and merge problems by number.
 
     A test (e.g. a USAMTS PDF rendered to page PNGs) may span several pages, with
@@ -293,14 +306,15 @@ def process_test(page_paths, engine, model, threshold=None, match=None, cache=No
     "mlx"; `model` is the matching NanonetsClient / OCRModel. `match` is the
     series-specific marker matcher. `cache` is an optional OCRCache for the
     nanonets whole-page OCR (ignored by the mlx engine, which OCRs per crop).
-    Returns the merged [Problem], number-sorted.
+    `layout` is the series' LayoutOptions (nanonets only). Returns the merged
+    [Problem], number-sorted.
     """
     merged = {}  # number -> Problem
     for path in page_paths:
         if engine == "nanonets":
             thr = threshold if threshold is not None else config.NANONETS_DETECT_THRESHOLD
             problems, _, _ = process_image_nanonets(
-                path, model, thr, match_marker=match, cache=cache
+                path, model, thr, match_marker=match, cache=cache, layout=layout
             )
         else:
             thr = threshold if threshold is not None else config.DETECT_THRESHOLD

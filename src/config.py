@@ -1,5 +1,6 @@
 """Central configuration. No more hardcoded paths scattered across modules."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 # --- Models ---
@@ -59,11 +60,40 @@ NANONETS_START_X_TOL_FRAC = 0.02
 
 # A DETR "Picture" covering more than this fraction of the page area is almost
 # certainly a whole-page layout misclassification, not a real figure (seen on
-# dense text pages: a low-confidence box spanning nearly the entire page).
-# Real MATHCOUNTS/USAMTS diagrams are small inset figures next to a problem's
-# text, nowhere near this large. Filtered out before figure->problem assignment
-# so it can't get glued onto some unlucky problem as a bogus "image".
+# dense MATHCOUNTS text pages: a low-confidence box spanning nearly the entire
+# page). This is *not* applied globally -- USAMTS problems can have legitimate
+# page-filling diagrams -- so it is the value MATHCOUNTS opts into via its
+# LayoutOptions (see MathcountsSeries.layout_options); other series keep every
+# Picture (max_picture_area_frac=None).
 NANONETS_MAX_PICTURE_AREA_FRAC = 0.5
+
+
+@dataclass(frozen=True)
+class LayoutOptions:
+    """Series-scoped tuning for the nanonets layout / figure heuristics.
+
+    The defaults here are the conservative, series-agnostic behavior. MATHCOUNTS
+    pages (dense answer-blank tables, faint inset figures, and a recurring
+    whole-page false-positive Picture box) opt into the extra heuristics via
+    ``MathcountsSeries.layout_options``. Threaded from the CLI through
+    ``process_test`` / ``process_image_nanonets`` so a series' quirks stay in the
+    series, not baked into the shared pipeline (mirrors ``match_marker`` /
+    ``skip_page``).
+    """
+
+    # Drop any DETR Picture covering more than this fraction of the page area
+    # (a whole-page layout misclassification). None -> keep every Picture.
+    max_picture_area_frac: float | None = None
+    # When DETR's left-margin problem-start count disagrees with nanonets'
+    # problem count, fall back to splitting page content at the largest vertical
+    # gaps (see pipeline._gap_based_starts). Off by default: on pages with
+    # unusual margins it can scramble otherwise-correct figure assignment.
+    gap_based_picture_fallback: bool = False
+    # Split a <table> block row-by-row, rewriting each row whose leading cell is
+    # a problem marker into plain statement text (MATHCOUNTS packs many problems
+    # into one answer-blank table). Off by default: other series' tables are
+    # real tabular data, kept verbatim as HTML.
+    split_marker_table_rows: bool = False
 
 # --- Detection ---
 DETECT_THRESHOLD = 0.6

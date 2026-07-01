@@ -85,9 +85,12 @@ def _select_tests(series, tests, test_id):
 def _parse_one_test(series, test, engine, model, threshold, cache=None):
     """Render a test to pages and parse them into a merged, post-processed list."""
     match = series.match_marker()
+    layout = series.layout_options()
     with tempfile.TemporaryDirectory(prefix="comp-ocr-") as workdir:
         pages = series.test_pages(test, workdir)
-        problems = process_test(pages, engine, model, threshold, match, cache=cache)
+        problems = process_test(
+            pages, engine, model, threshold, match, cache=cache, layout=layout
+        )
     return series.postprocess(problems)
 
 
@@ -211,7 +214,8 @@ def _cmd_solutions_ocr(args, series):
                     )
                 else:
                     problems = process_test(
-                        pages, args.engine, model, args.threshold, match, cache=cache
+                        pages, args.engine, model, args.threshold, match,
+                        cache=cache, layout=series.layout_options(),
                     )
                     problems = series.postprocess(problems)
                     solutions = {p.number: p.text for p in problems}

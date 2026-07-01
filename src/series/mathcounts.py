@@ -46,6 +46,22 @@ class MathcountsSeries(Series):
     name = "mathcounts"
     has_solutions = False  # shared per-level solutions.pdf/answers.pdf -- see module docstring
 
+    def layout_options(self):
+        """Opt into the MATHCOUNTS-tuned nanonets figure/table heuristics.
+
+        MATHCOUNTS pages need all three (see `config.LayoutOptions`): a recurring
+        whole-page false-positive Picture box (filtered by area), problems packed
+        into a single answer-blank ``<table>`` (marker rows unpacked to text), and
+        faint number boxes that sometimes miss detection and drop a problem's
+        left-margin start (recovered by the gap-based fallback). Other series keep
+        the conservative base defaults.
+        """
+        return config.LayoutOptions(
+            max_picture_area_frac=config.NANONETS_MAX_PICTURE_AREA_FRAC,
+            gap_based_picture_fallback=True,
+            split_marker_table_rows=True,
+        )
+
     def skip_page(self, text):
         # Older booklets double-space this boilerplate ("DO  NOT  BEGIN...")
         # and can wrap it across a line break; collapse all whitespace runs

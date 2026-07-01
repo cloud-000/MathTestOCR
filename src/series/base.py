@@ -9,7 +9,7 @@ pipeline; a series only describes *what* to parse and *how its numbering works*.
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import pdf_io
+from .. import config, pdf_io
 
 # Page-image extensions recognized when a test is a folder of pages rather than a PDF.
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -99,6 +99,16 @@ class Series:
         """Hook to clean up the merged problem list. Default: unchanged."""
         return problems
 
+    def layout_options(self):
+        """Return the nanonets layout/figure heuristics for this series.
+
+        The base defaults (see `config.LayoutOptions`) are the conservative,
+        series-agnostic behavior: no page-spanning Picture filter, no gap-based
+        problem-start fallback, and tables kept verbatim. Override to opt into
+        layout-specific heuristics (MATHCOUNTS does).
+        """
+        return config.LayoutOptions()
+
     # --- Solutions -------------------------------------------------------
     def solution_source(self, test: Test):
         """Return the solution source (PDF/folder) for `test`, or None."""
@@ -124,8 +134,11 @@ class Series:
         """
         from ..nanonets import parse_layout
 
+        opts = self.layout_options()
         grouped: dict[int, list[str]] = {}
-        for item in parse_layout(full_text, self.match_marker()):
+        for item in parse_layout(
+            full_text, self.match_marker(), split_marker_table_rows=opts.split_marker_table_rows
+        ):
             if item["kind"] == "text" and item["problem"] is not None:
                 grouped.setdefault(item["problem"], []).append(item["text"])
         return {n: "\n".join(parts) for n, parts in grouped.items()}
