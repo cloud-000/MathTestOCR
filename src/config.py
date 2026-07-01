@@ -41,7 +41,7 @@ NANONETS_PROMPT = (
     "numbers should be wrapped in brackets. Ex: <page_number>14</page_number> "
     "or <page_number>9/22</page_number>. Prefer using ☐ and ☑ for "
     "check boxes."
-# "Extract the text from the above document as if you were reading it naturally. Return the tables in html format. Return the equations in LaTeX representation. If there is an image in the document and image caption is not present, add a small description of the image inside the  tag; otherwise, add the image caption inside . Watermarks should be wrapped in brackets. Ex: OFFICIAL COPY. Page numbers should be wrapped in brackets. Ex: <page_number>14</page_number> or <page_number>9/22</page_number>. Prefer using ☐ and ☑ for check boxes."
+    # "Extract the text from the above document as if you were reading it naturally. Return the tables in html format. Return the equations in LaTeX representation. If there is an image in the document and image caption is not present, add a small description of the image inside the  tag; otherwise, add the image caption inside . Watermarks should be wrapped in brackets. Ex: OFFICIAL COPY. Page numbers should be wrapped in brackets. Ex: <page_number>14</page_number> or <page_number>9/22</page_number>. Prefer using ☐ and ☑ for check boxes."
 )
 
 # Hard cap on tokens generated per page. A backstop against runaway loops
@@ -52,10 +52,13 @@ NANONETS_MAX_TOKENS = 16384
 # of the tail recur NANONETS_REPEAT_COUNT times within the last
 # NANONETS_REPEAT_WINDOW chars, the model is stuck in a verbatim loop -- abort
 # the stream. Probes made only of layout-filler chars (underscores, dots) are
-# ignored so long answer-blanks / leader lines don't trip the guard.
+# ignored so long answer-blanks / leader lines don't trip the guard. Repeated
+# probes must also be close together; legitimate test layouts often repeat the
+# same answer-box HTML once per problem, hundreds of chars apart.
 NANONETS_REPEAT_WINDOW = 1200
 NANONETS_REPEAT_PROBE = 48
 NANONETS_REPEAT_COUNT = 4
+NANONETS_REPEAT_MAX_GAP = NANONETS_REPEAT_PROBE * 6
 
 # Picture->problem mapping is geometric: each non-blank DETR Picture is assigned
 # to the problem whose statement it vertically sits in. Nanonets' inline <img>
@@ -140,6 +143,7 @@ class LayoutOptions:
     # loop-breaking, so keep it as low as still works.
     nanonets_temperature: float = NANONETS_TEMPERATURE
 
+
 # --- Detection ---
 DETECT_THRESHOLD = 0.6
 
@@ -204,6 +208,12 @@ SERIES_DATA_DIRS = {
 # PDFs. Only these round stems are parseable tests; everything else (answers,
 # solutions, stray year booklets) is skipped by discovery.
 MATHCOUNTS_TEST_ROUNDS = {
-    "sprint", "target", "team", "countdown", "cdr",
-    "warmups", "workouts", "masters",
+    "sprint",
+    "target",
+    "team",
+    "countdown",
+    "cdr",
+    "warmups",
+    "workouts",
+    "masters",
 }

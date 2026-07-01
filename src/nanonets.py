@@ -52,14 +52,31 @@ def _is_runaway(text: str) -> bool:
 
     The Nanonets model can get stuck endlessly re-describing a figure
     ("The numbers 24, A-1 ... are written in the dodecagons." x N). We catch it
-    by checking whether the final probe-sized slice recurs several times within
-    the recent window. Filler-only tails (rows of underscores/dots) are ignored.
+    by checking whether the final probe-sized slice recurs several times in a
+    tight cluster near the end of the recent window. Filler-only tails (rows of
+    underscores/dots) are ignored.
     """
     tail = text[-config.NANONETS_REPEAT_WINDOW :]
     probe = tail[-config.NANONETS_REPEAT_PROBE :]
     if len(probe) < config.NANONETS_REPEAT_PROBE or set(probe) <= _FILLER_CHARS:
         return False
-    return tail.count(probe) >= config.NANONETS_REPEAT_COUNT
+
+    positions = []
+    start = 0
+    while True:
+        idx = tail.find(probe, start)
+        if idx == -1:
+            break
+        positions.append(idx)
+        start = idx + 1
+    if len(positions) < config.NANONETS_REPEAT_COUNT:
+        return False
+
+    recent = positions[-config.NANONETS_REPEAT_COUNT :]
+    return all(
+        b - a <= config.NANONETS_REPEAT_MAX_GAP
+        for a, b in zip(recent, recent[1:])
+    )
 
 
 def _close_dangling_img(text: str) -> str:
