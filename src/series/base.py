@@ -25,6 +25,10 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 _ANSWER_ENTRY_RE = re.compile(r"(?:^|(?<=\s))(\d{1,3})\s*[.)]\s+")
 _TAG_RE = re.compile(r"<[^>]+>")
 _BLANK_RUN_RE = re.compile(r"_{2,}")  # answer blanks: "1. ________ 42"
+_SOLUTION_INDEX_RE = re.compile(
+    r"^\s*(?:\*{1,2}|#+\s*|\\textbf\{)?\s*Solution\s+(\d+)\b",
+    re.IGNORECASE,
+)
 
 
 def numbered_answers_in_line(line: str):
@@ -172,6 +176,20 @@ class Series:
             if item["kind"] == "text" and item["problem"] is not None:
                 grouped.setdefault(item["problem"], []).append(item["text"])
         return {n: "\n".join(parts) for n, parts in grouped.items()}
+
+    def solution_index_marker(self, text: str):
+        """Return a solution index from a solution-block heading, or None.
+
+        Used only for naming solution figure crops. Series with nonstandard
+        worked-solution headings can override this while keeping OCR/layout code
+        series-agnostic.
+        """
+        solution = None
+        for line in text.splitlines():
+            m = _SOLUTION_INDEX_RE.match(line.strip())
+            if m is not None:
+                solution = int(m.group(1))
+        return solution
 
     # --- Answers ----------------------------------------------------------
     def scrape_answers(self, test: Test) -> dict:

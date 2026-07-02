@@ -226,6 +226,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
                 layout=series.layout_options(),
                 clean_page=series.clean_solution_markdown,
                 source_pdf=sol,
+                match_solution=series.solution_index_marker,
             )
             cleaned = "\n\n".join(
                 series.clean_solution_markdown(i, md) for i, md in enumerate(pages_md)
@@ -242,9 +243,13 @@ def _scrape_solutions(args, series, test, sol, dest, model):
             )
             solutions = {p.number: p.text for p in problems}
             figures = {
-                p.number: [
-                    el.crop for el in p.elements if el.kind == "image" and el.crop is not None
-                ]
+                p.number: {
+                    1: [
+                        el.crop
+                        for el in p.elements
+                        if el.kind == "image" and el.crop is not None
+                    ]
+                }
                 for p in problems
             }
     n = output.write_solutions(solutions, dest)

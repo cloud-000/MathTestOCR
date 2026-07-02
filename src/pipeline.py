@@ -459,7 +459,36 @@ def _text_layer_markers(pdf_page, image, match, carry):
     return markers, gutter
 
 
-def _assign_pics_by_markers(pics, markers, gutter, carry):
+def _solution_index_from_items(pic, items, page_height, carry_solutions, match_solution):
+    """Best-effort solution index for a Picture from OCR reading-order spans."""
+    if match_solution is None:
+        return 1
+    spans = []
+    offset = 0
+    current = dict(carry_solutions)
+    for it in items:
+        problem = it["problem"]
+        if problem is not None and it["kind"] == "text":
+            solution = match_solution(it["text"])
+            if solution is not None:
+                current[problem] = solution
+        spans.append((offset, problem, current.get(problem, 1) if problem else 1))
+        offset += max(len(it["text"]), 1)
+    if not spans:
+        return 1
+    yc = (pic["box"][1] + pic["box"][3]) / 2
+    target = (yc / page_height) * offset
+    solution = 1
+    for start, _, sol in spans:
+        if start > target:
+            break
+        solution = sol
+    return solution
+
+
+def _assign_pics_by_markers(
+    pics, markers, gutter, carry, items, page_height, carry_solutions, match_solution
+):
     """Assign each Picture to the last text-layer marker at or above it.
 
     Positions compare column-major ((column, y), matching `markers`' reading
@@ -476,18 +505,23 @@ def _assign_pics_by_markers(pics, markers, gutter, carry):
                 number = prob
             else:
                 break
-        assigned.append((pic, number))
+        solution = _solution_index_from_items(
+            pic, items, page_height, carry_solutions, match_solution
+        )
+        assigned.append((pic, number, solution))
     return assigned
 
 
-def _assign_solution_pics(pics, items, page_height, carry):
+def _assign_solution_pics(
+    pics, items, page_height, carry, carry_solutions=None, match_solution=None
+):
     """Pair each DETR Picture on a solution page with a problem number.
 
     The OCR-only fallback used when the text layer gave no confident markers
     (see _text_layer_markers). `items` is the page's `parse_layout` output
     (already seeded with `carry`, the problem in progress at the top of the
     page); `pics` is top-to-bottom. Three tiers, most reliable first:
-      1. the page starts no new problem -> everything belongs to `carry`;
+      1. the page has no problem-tagged content -> everything belongs to `carry`;
       2. nanonets' inline <img> count matches DETR's picture count -> zip them
          in reading order (each <img> item is already tagged with its problem);
       3. otherwise estimate by position: a picture's y-center fraction of the
@@ -495,30 +529,50 @@ def _assign_solution_pics(pics, items, page_height, carry):
          takes the problem of the item its fraction falls in. Rough (figures
          occupy height but few chars, and column layouts break it), but only
          used when everything better doesn't apply.
-    Returns [(picture_det, problem_number | None), ...].
+    Returns [(picture_det, problem_number | None, solution_index), ...].
     """
+    carry_solutions = carry_solutions or {}
+    item_solutions = []
+    current_solutions = dict(carry_solutions)
+    for it in items:
+        problem = it["problem"]
+        if problem is not None and it["kind"] == "text" and match_solution is not None:
+            solution = match_solution(it["text"])
+            if solution is not None:
+                current_solutions[problem] = solution
+        item_solutions.append(current_solutions.get(problem, 1) if problem else 1)
+
     numbers = {it["problem"] for it in items if it["problem"] is not None}
-    if not numbers or numbers == {carry}:
-        return [(p, carry) for p in pics]
+    if not numbers:
+        solution = carry_solutions.get(carry, 1) if carry is not None else 1
+        return [(p, carry, solution) for p in pics]
     img_items = [it for it in items if it["kind"] == "image"]
     if len(img_items) == len(pics):
-        return [(p, it["problem"]) for p, it in zip(pics, img_items)]
-    spans = []  # (start_offset, problem) per item, in reading order
+        img_solutions = [
+            sol for it, sol in zip(items, item_solutions) if it["kind"] == "image"
+        ]
+        return [
+            (p, it["problem"], sol)
+            for p, it, sol in zip(pics, img_items, img_solutions)
+        ]
+    spans = []  # (start_offset, problem, solution) per item, in reading order
     offset = 0
-    for it in items:
-        spans.append((offset, it["problem"]))
+    for it, solution in zip(items, item_solutions):
+        spans.append((offset, it["problem"], solution))
         offset += max(len(it["text"]), 1)
     assigned = []
     for pic in pics:
         yc = (pic["box"][1] + pic["box"][3]) / 2
         target = (yc / page_height) * offset
         number = carry
-        for start, prob in spans:
+        solution = carry_solutions.get(carry, 1) if carry is not None else 1
+        for start, prob, sol in spans:
             if start > target:
                 break
             if prob is not None:
                 number = prob
-        assigned.append((pic, number))
+                solution = sol
+        assigned.append((pic, number, solution))
     return assigned
 
 
@@ -531,15 +585,16 @@ def process_solution_document(
     layout=None,
     clean_page=None,
     source_pdf=None,
+    match_solution=None,
 ):
     """OCR a solution document and crop its figures, assigned to problems.
 
     Text segmentation stays with the series (`Series.parse_solutions`); this
     returns the raw material for it plus the figure crops the text pipeline
     would lose: ``(pages_md, figures)`` where `pages_md` is the *raw* markdown
-    per page and `figures` maps problem number -> [PIL crop, ...] from DETR's
-    Picture boxes (blank, nested, and -- per `layout` -- page-spanning boxes
-    dropped, exactly as on statement pages).
+    per page and `figures` maps problem number -> {solution index: [PIL crop,
+    ...]} from DETR's Picture boxes (blank, nested, and -- per `layout` --
+    page-spanning boxes dropped, exactly as on statement pages).
 
     Problem numbering must agree with what `parse_solutions` derives from the
     same text, so each page is tagged with the same `match` marker matcher and
@@ -566,6 +621,7 @@ def process_solution_document(
     pages_md = []
     figure_items = []
     carry = None  # problem in progress at the top of the next page
+    carry_solutions = {}  # problem -> solution index in progress across pages
     for index, path in enumerate(page_paths):
         image = Image.open(path).convert("RGB")
         if cache is not None:
@@ -590,12 +646,31 @@ def process_solution_document(
             markers, gutter = _text_layer_markers(doc[pdf_index], image, match, carry)
             new_numbers = {it["problem"] for it in items} - {None, carry}
             if markers and {m[2] for m in markers} == new_numbers:
-                assigned = _assign_pics_by_markers(pics, markers, gutter, carry)
+                assigned = _assign_pics_by_markers(
+                    pics,
+                    markers,
+                    gutter,
+                    carry,
+                    items,
+                    image.height,
+                    carry_solutions,
+                    match_solution,
+                )
         if assigned is None:
-            assigned = _assign_solution_pics(pics, items, image.height, carry)
-        for pic, number in assigned:
+            assigned = _assign_solution_pics(
+                pics, items, image.height, carry, carry_solutions, match_solution
+            )
+        for pic, number, solution in assigned:
             if number is not None:
-                figure_items.append((number, image.crop(tuple(pic["box"]))))
+                figure_items.append((number, solution, image.crop(tuple(pic["box"]))))
+        if match_solution is not None:
+            for it in items:
+                number = it["problem"]
+                if number is None or it["kind"] != "text":
+                    continue
+                solution = match_solution(it["text"])
+                if solution is not None:
+                    carry_solutions[number] = solution
         page_numbers = [it["problem"] for it in items if it["problem"] is not None]
         if page_numbers:
             carry = max(page_numbers)
@@ -605,6 +680,6 @@ def process_solution_document(
     if drop:
         figure_items = figure_items[:-drop] if drop < len(figure_items) else []
     figures = {}
-    for number, crop in figure_items:
-        figures.setdefault(number, []).append(crop)
+    for number, solution, crop in figure_items:
+        figures.setdefault(number, {}).setdefault(solution, []).append(crop)
     return pages_md, figures

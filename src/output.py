@@ -4,7 +4,8 @@ Layout inside `dest` (typically ``out/<series>/<test>/``):
   problems.json                       -- {problem number: statement text}
   problem_<n>_image_<k>.png           -- 1-based image crop per problem
   problem_solution.json               -- {problem number: [solution text, ...]}
-  problem_<n>_solution_image_<k>.png  -- figure crops from the solution document
+  problem_<n>_solution_<k>_image_<j>.png
+                                     -- figure crops from the solution document
   problem_answer.json                 -- {problem number: answer-key entry}
 """
 
@@ -89,18 +90,26 @@ def write_solutions(solutions, dest, suffix="solution"):
 def write_solution_images(figures, dest):
     """Write each problem's solution figure crops into `dest`.
 
-    `figures` maps problem number -> list of PIL crops (see
+    `figures` maps problem number -> {solution index: list of PIL crops} (see
     pipeline.process_solution_document). Crops are fully regenerated on every
-    scrape: stale ``problem_*_solution_image_*.png`` from a prior run are
-    removed first, mirroring `write_problems`. Returns the number written.
+    scrape: stale solution image crops from a prior run are removed first,
+    mirroring `write_problems`. Returns the number written.
     """
     out = Path(dest)
     out.mkdir(parents=True, exist_ok=True)
     for stale in out.glob("problem_*_solution_image_*.png"):
         stale.unlink()
+    for stale in out.glob("problem_*_solution_*_image_*.png"):
+        stale.unlink()
     written = 0
-    for number, crops in figures.items():
-        for k, crop in enumerate(crops, start=1):
-            crop.save(out / f"problem_{number}_solution_image_{k}.png")
-            written += 1
+    for number, value in figures.items():
+        if isinstance(value, dict):
+            solution_groups = value.items()
+        else:
+            # Backward-compatible flat input: all crops belong to solution 1.
+            solution_groups = [(1, value)]
+        for solution, crops in solution_groups:
+            for k, crop in enumerate(crops, start=1):
+                crop.save(out / f"problem_{number}_solution_{solution}_image_{k}.png")
+                written += 1
     return written
