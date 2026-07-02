@@ -129,7 +129,10 @@ class MandelbrotSeries(Series):
         while keeping transcription faithful; the layout heuristics stay at the
         conservative base defaults. Raise further only if grids still loop.
         """
-        return config.LayoutOptions(nanonets_temperature=0.1)
+        return config.LayoutOptions(
+            nanonets_temperature=0.1,
+            drop_trailing_solution_figures=1,
+        )
 
     def discover_tests(self, data_dir):
         """One test per ``*test*.pdf`` inside each season folder."""

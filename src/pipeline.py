@@ -564,7 +564,7 @@ def process_solution_document(
 
         doc = pymupdf.open(source_pdf)
     pages_md = []
-    figures = {}
+    figure_items = []
     carry = None  # problem in progress at the top of the next page
     for index, path in enumerate(page_paths):
         image = Image.open(path).convert("RGB")
@@ -595,10 +595,16 @@ def process_solution_document(
             assigned = _assign_solution_pics(pics, items, image.height, carry)
         for pic, number in assigned:
             if number is not None:
-                figures.setdefault(number, []).append(image.crop(tuple(pic["box"])))
+                figure_items.append((number, image.crop(tuple(pic["box"]))))
         page_numbers = [it["problem"] for it in items if it["problem"] is not None]
         if page_numbers:
             carry = max(page_numbers)
     if doc is not None:
         doc.close()
+    drop = max(layout.drop_trailing_solution_figures, 0)
+    if drop:
+        figure_items = figure_items[:-drop] if drop < len(figure_items) else []
+    figures = {}
+    for number, crop in figure_items:
+        figures.setdefault(number, []).append(crop)
     return pages_md, figures

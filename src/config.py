@@ -92,7 +92,9 @@ NESTED_PICTURE_FRAC = 0.9
 # text follows its marker -- a real paragraph ("1. It is possible to fit...").
 # This keeps short marker-shaped furniture out: answer-key cells ("4. 12") and
 # bare number headers, whose out-of-order numbers would poison the assignment.
-SOLUTION_MARKER_MIN_CHARS = 40
+# Keep this below formula-heavy starts whose PDF text can be split into many
+# small blocks (Mandelbrot problem 6 in 2017-18_tmctest2N is 37 chars).
+SOLUTION_MARKER_MIN_CHARS = 30
 # Two-column solution sheets (Mandelbrot's landscape pages) are detected by a
 # vertical gutter no text block crosses: at least this fraction of the page
 # wide, with its center inside the middle band below. Blocks wider than
@@ -142,6 +144,10 @@ class LayoutOptions:
     # repeat a <table> row). Higher values trade transcription fidelity for
     # loop-breaking, so keep it as low as still works.
     nanonets_temperature: float = NANONETS_TEMPERATURE
+    # Drop this many final solution-document figure crops after assignment.
+    # Useful for series with a decorative logo/back-cover graphic after the
+    # last worked solution; 0 keeps every detected solution figure.
+    drop_trailing_solution_figures: int = 0
 
 
 # --- Detection ---
