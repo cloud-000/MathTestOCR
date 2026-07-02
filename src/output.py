@@ -1,14 +1,31 @@
 """Write parsed problems and scraped solutions to a destination directory.
 
 Layout inside `dest` (typically ``out/<series>/<test>/``):
-  problem_<n>.txt                     -- statement text
+  problems.json                       -- {problem number: statement text}
   problem_<n>_image_<k>.png           -- 1-based image crop per problem
-  problem_<n>_solution.txt            -- solution text (`_<k>.txt` when several)
+  problem_solution.json               -- {problem number: [solution text, ...]}
   problem_<n>_solution_image_<k>.png  -- figure crops from the solution document
-  problem_<n>_answer.txt              -- answer-key entry
+  problem_answer.json                 -- {problem number: answer-key entry}
 """
 
+import json
 from pathlib import Path
+
+
+def _write_json(path, value):
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def _remove_legacy_problem_text(out):
+    for stale in out.glob("problem_*.txt"):
+        parts = stale.stem.split("_")
+        if len(parts) == 2 and parts[1].isdigit():
+            stale.unlink()
+
+
+def _remove_legacy_solution_text(out, suffix):
+    for stale in out.glob(f"problem_*_{suffix}*.txt"):
+        stale.unlink()
 
 
 def write_problems(problems, dest):
@@ -18,45 +35,54 @@ def write_problems(problems, dest):
     """
     out = Path(dest)
     out.mkdir(parents=True, exist_ok=True)
+    _remove_legacy_problem_text(out)
     # Image crops are fully regenerated below; clear any from a prior parse so a
     # figure that moved to a different problem doesn't leave a stale crop behind
     # (e.g. an old problem_6_image_1.png after it's reassigned to problem 3).
     for stale in out.glob("problem_*_image_*.png"):
         stale.unlink()
+    data = {}
     for p in problems:
         text = p.text
         if text.strip():
-            (out / f"problem_{p.number}.txt").write_text(text)
+            data[str(p.number)] = text
         k = 0
         for el in p.elements:
             if el.kind == "image" and el.crop is not None:
                 k += 1
                 el.crop.save(out / f"problem_{p.number}_image_{k}.png")
+    _write_json(out / "problems.json", data)
     return len(problems)
 
 
 def write_solutions(solutions, dest, suffix="solution"):
-    """Write per-problem solution/answer text alongside the problems in `dest`.
+    """Write per-problem solution/answer JSON alongside the problems in `dest`.
 
     `solutions` maps problem number -> value, where a value is either a single
     string or a list of strings (a problem may have several distinct solutions).
-    A string is written as ``problem_<n>_<suffix>.txt``; a list is written as
-    ``problem_<n>_<suffix>_<k>.txt`` (1-based), so multiple solutions per problem
-    are preserved. Empty entries are skipped. `dest` is created if missing.
-    Returns the number of files written.
+    Solutions are normalized to arrays in ``problem_solution.json``; answers are
+    written as a string map in ``problem_answer.json``. Empty entries are
+    skipped. `dest` is created if missing. Returns the number of entries written.
     """
     out = Path(dest)
     out.mkdir(parents=True, exist_ok=True)
+    _remove_legacy_solution_text(out, suffix)
+    path = out / f"problem_{suffix}.json"
+    data = {}
     written = 0
     for number, value in solutions.items():
         if isinstance(value, (list, tuple)):
-            for k, text in enumerate(value, start=1):
+            items = []
+            for text in value:
                 if text and text.strip():
-                    (out / f"problem_{number}_{suffix}_{k}.txt").write_text(text)
+                    items.append(text)
                     written += 1
+            if items:
+                data[str(number)] = items
         elif value and value.strip():
-            (out / f"problem_{number}_{suffix}.txt").write_text(value)
+            data[str(number)] = [value] if suffix == "solution" else value
             written += 1
+    _write_json(path, data)
     return written
 
 

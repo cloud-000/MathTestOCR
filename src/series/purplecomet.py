@@ -9,8 +9,8 @@ so each ``<year>/<division>`` (division is ``MS`` or ``HS``) is one test, id
 ``<year>_<division>``. Purple Comet publishes no worked solutions, only an answer
 key -- and the data repo already scraped it into ``answers.txt`` (a TSV with a
 ``Problem #\tAnswer`` header), so `scrape_answers` just reads that file: no
-network, no extra deps. The `solutions` command writes these as
-``problem_<n>_answer.txt``.
+network, no extra deps. The `solutions` command writes these to
+``problem_answer.json``.
 """
 
 from pathlib import Path

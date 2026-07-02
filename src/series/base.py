@@ -180,7 +180,7 @@ class Series:
         For series whose key is already machine-readable (Purple Comet's
         pre-scraped ``answers.txt``). The `solutions` command tries this first;
         when it returns {}, it falls back to OCR-ing `answer_source` and calling
-        `parse_answers`. Answers are written as ``problem_<n>_answer.txt``.
+        `parse_answers`. Answers are written to ``problem_answer.json``.
         """
         return {}
 

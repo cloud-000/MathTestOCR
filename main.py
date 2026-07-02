@@ -208,7 +208,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
     answer key (see Series.answer_source) can be parsed without re-OCR; None
     when the test was skipped or the mlx engine (no whole-page markdown) ran.
     """
-    if any(dest.glob("problem_1_solution*.txt")) and not args.force:
+    if (dest / "problem_solution.json").exists() and not args.force:
         print(f"[{series.name}] skip {test.id} solutions (exist; --force to redo)")
         return None
     print(f"[{series.name}] scraping solutions for {test.id} ...")
@@ -249,18 +249,18 @@ def _scrape_solutions(args, series, test, sol, dest, model):
             }
     n = output.write_solutions(solutions, dest)
     k = output.write_solution_images(figures, dest)
-    print(f"[{series.name}] wrote {n} solution file(s), {k} figure crop(s) -> {dest}")
+    print(f"[{series.name}] wrote {n} solution(s), {k} figure crop(s) -> {dest}")
     return pages_md
 
 
 def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, sol_pages_md):
-    """Write one test's answer key into problem_<n>_answer.txt files.
+    """Write one test's answer key into problem_answer.json.
 
     Tries the no-OCR `scrape_answers` hook first (pre-scraped keys); otherwise
     OCRs `answer_source` and hands the pages to `parse_answers`. When the key
     lives inside the solution document just OCR'd, its markdown is reused.
     """
-    if (dest / "problem_1_answer.txt").exists() and not args.force:
+    if (dest / "problem_answer.json").exists() and not args.force:
         print(f"[{series.name}] skip {test.id} answers (exist; --force to redo)")
         return
     answers = series.scrape_answers(test)
@@ -292,7 +292,7 @@ def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, so
         print(f"[{series.name}] skip {test.id} (no answers found)")
         return
     n = output.write_solutions(answers, dest, suffix="answer")
-    print(f"[{series.name}] wrote {n} answer file(s) -> {dest}")
+    print(f"[{series.name}] wrote {n} answer(s) -> {dest}")
 
 
 def _answer_cache_path(out_root, data_dir, src):
@@ -367,7 +367,7 @@ def main():
         "--test", help="only scrape this test id (exact match, e.g. 2025_state_sprint)"
     )
     p_sol.add_argument(
-        "--force", action="store_true", help="re-scrape even if solution files exist"
+        "--force", action="store_true", help="re-scrape even if solution JSON exists"
     )
     _add_engine_args(p_sol)
     p_sol.set_defaults(func=cmd_solutions)
