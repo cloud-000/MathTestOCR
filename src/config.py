@@ -33,7 +33,7 @@ NANONETS_TEMPERATURE = 0.0
 # not drop the image-description instruction.
 NANONETS_PROMPT = (
     "Extract the text from the above document as if you were reading it "
-    "naturally. Return the tables in html format. Return the equations in LaTeX "
+    "naturally. Return the tables in html format. Do NOT include any style attribute. Return the equations in LaTeX "
     "representation. If there is an image in the document, output an empty "
     "<img> tag; do not describe the image or add captions. "
     "Watermarks should "

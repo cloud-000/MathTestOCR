@@ -46,6 +46,13 @@ _BLANK_RUN_RE = re.compile(r"_{2,}")  # answer blanks: "________"
 # A tail made only of these is filler, not a generation loop.
 _FILLER_CHARS = set("_ .-—–·•\t\n")
 
+# Collapse an opening tag's attributes to just its name: `<span style="...">` ->
+# `<span>`, `<td colspan="2">` -> `<td>`. Used only inside the runaway guard so
+# a long identical style attribute emitted once per answer-key cell can't fill
+# the repeat probe by itself (see _is_runaway). Tag *names* survive, so a real
+# tag loop (`<td><td><td>...`) is still caught.
+_TAG_ATTR_RE = re.compile(r"<([a-zA-Z][\w:-]*)\b[^>]*?(/?)>")
+
 
 def _is_runaway(text: str) -> bool:
     """True if the tail of `text` is a verbatim loop (degenerate generation).
@@ -55,7 +62,18 @@ def _is_runaway(text: str) -> bool:
     by checking whether the final probe-sized slice recurs several times in a
     tight cluster near the end of the recent window. Filler-only tails (rows of
     underscores/dots) are ignored.
+
+    Tag *attributes* are collapsed first (`<span style="...">` -> `<span>`) so a
+    long identical style string emitted once per cell -- e.g. an answer key's
+    ``<span style="border: 1px solid black; padding: 2px;">`` (53 chars) around
+    every answer, dozens of them a few chars apart -- can't fill the 48-char
+    probe by itself and masquerade as a loop; the varying cell numbers/answers
+    between the tags then break the repeat. Tag *names* are kept, so a genuine
+    tag loop (`<td><td><td>...`) and any repeated content still trip the guard.
+    We normalize a slice wider than the window (stripping shrinks it) so the
+    post-normalization tail is full-length.
     """
+    text = _TAG_ATTR_RE.sub(r"<\1\2>", text[-2 * config.NANONETS_REPEAT_WINDOW :])
     tail = text[-config.NANONETS_REPEAT_WINDOW :]
     probe = tail[-config.NANONETS_REPEAT_PROBE :]
     if len(probe) < config.NANONETS_REPEAT_PROBE or set(probe) <= _FILLER_CHARS:
