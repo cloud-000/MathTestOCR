@@ -84,6 +84,19 @@ def _select_tests(series, tests, test_id):
     return selected
 
 
+def _filter_existing(series, tests, out_root, existing):
+    """Keep only tests that already have an output folder under `out_root`.
+
+    Used by `--existing` to re-run over the tests already parsed on disk instead
+    of every test discovered in the data dir.
+    """
+    if not existing:
+        return tests
+    selected = [t for t in tests if (Path(out_root) / t.id).is_dir()]
+    print(f"[{series.name}] --existing: {len(selected)} of {len(tests)} test(s) present in {out_root}")
+    return selected
+
+
 def _parse_one_test(series, test, engine, model, threshold, cache=None):
     """Render a test to pages and parse them into a merged, post-processed list."""
     match = series.match_marker()
@@ -104,6 +117,7 @@ def _cmd_parse_batch(args):
     tests = series.discover_tests(data_dir)
     print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
     tests = _select_tests(series, tests, args.test)
+    tests = _filter_existing(series, tests, out_root, args.existing)
     if not tests:
         return
 
@@ -183,6 +197,9 @@ def cmd_solutions(args):
     tests = series.discover_tests(data_dir)
     print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
     tests = _select_tests(series, tests, args.test)
+    tests = _filter_existing(series, tests, out_root, args.existing)
+    if not tests:
+        return
 
     model = _open_engine(args.engine)
     try:
@@ -367,6 +384,11 @@ def main():
     p_parse.add_argument(
         "--force", action="store_true", help="re-parse tests even if already present"
     )
+    p_parse.add_argument(
+        "--existing",
+        action="store_true",
+        help="only process tests that already have an out/<series>/<test>/ folder",
+    )
     p_parse.add_argument("--debug", action="store_true", help="save annotated overlay (single image)")
     _add_engine_args(p_parse)
     p_parse.set_defaults(func=cmd_parse)
@@ -379,6 +401,11 @@ def main():
     )
     p_sol.add_argument(
         "--force", action="store_true", help="re-scrape even if solution JSON exists"
+    )
+    p_sol.add_argument(
+        "--existing",
+        action="store_true",
+        help="only process tests that already have an out/<series>/<test>/ folder",
     )
     _add_engine_args(p_sol)
     p_sol.set_defaults(func=cmd_solutions)
