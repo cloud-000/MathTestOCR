@@ -156,6 +156,19 @@ def _close_dangling_img(text: str) -> str:
     return text[:content_start] + "</img>" + rest[min(cuts):]
 
 
+def _select_model(ids):
+    """Pick the OCR/vision model from the endpoint's advertised ids.
+
+    Returns the first id containing any `config.NANONETS_MODEL_PREFER` keyword
+    (case-insensitive), else the first id. Empty list raises, same as before.
+    """
+    for keyword in config.NANONETS_MODEL_PREFER:
+        for model_id in ids:
+            if keyword in model_id.lower():
+                return model_id
+    return ids[0]
+
+
 class NanonetsClient:
     """Wrapper around the OpenAI-compatible Nanonets-OCR endpoint."""
 
@@ -169,9 +182,19 @@ class NanonetsClient:
 
     @property
     def model(self) -> str:
-        """Resolved model id; auto-detected from /v1/models when not configured."""
+        """Resolved model id; auto-detected from /v1/models when not configured.
+
+        The endpoint can serve more than one model (e.g. a text-only chat model
+        listed *before* the OCR one), so we don't blindly take the first id --
+        that silently drives the wrong, non-vision model. Prefer an id matching
+        `config.NANONETS_MODEL_PREFER`, falling back to the first id, and log the
+        pick so a mis-selection is visible rather than surfacing later as an
+        opaque 500/empty transcription.
+        """
         if self._model is None:
-            self._model = self._client.models.list().data[0].id
+            ids = [m.id for m in self._client.models.list().data]
+            self._model = _select_model(ids)
+            print(f"[nanonets] using model: {self._model}")
         return self._model
 
     def parse_page(self, image: Image.Image, temperature: float = config.NANONETS_TEMPERATURE) -> str:

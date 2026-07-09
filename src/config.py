@@ -14,7 +14,13 @@ DEFAULT_ENGINE = "nanonets"
 
 # --- Nanonets engine (OpenAI-compatible endpoint) ---
 NANONETS_BASE_URL = "http://127.0.0.1:8080/v1"
-NANONETS_MODEL = None  # None -> auto-detect via GET /v1/models (first id)
+# None -> auto-detect via GET /v1/models. The endpoint may serve several models
+# (e.g. a text-only chat model alongside the OCR one); we must not blindly take
+# the first id. Auto-detect prefers a model whose id contains one of these
+# keywords (a vision OCR model) and only falls back to the first id when none
+# match. Set NANONETS_MODEL to a full id to pin it explicitly.
+NANONETS_MODEL = None
+NANONETS_MODEL_PREFER = ("nanonets", "ocr")
 # The detection threshold the nanonets engine uses for the DETR crops it pulls.
 # Lower than the mlx default: figures are faint and 0.6 drops some (e.g. a
 # grid diagram), while 0.5 catches them without admitting page-spanning junk.
@@ -29,19 +35,28 @@ NANONETS_DETECT_THRESHOLD = 0.5
 NANONETS_TEMPERATURE = 0.0
 
 # Standard Nanonets-OCR prompt. The <img></img> tags it emits at each figure's
-# location (in reading order) are what lets us map DETR crops to problems, so do
-# not drop the image-description instruction.
+# location (in reading order) are the reading-order position signal we use to
+# place figure crops inline (see pipeline.inline_solution_figures).
+#
+# IMPORTANT: this model (Nanonets-OCR-s) only emits <img> when asked to write a
+# *description inside* the tag -- the "output an empty <img>; do not describe"
+# variant suppresses the tags entirely (measured: 0 tags on a 3-figure page vs 2
+# with the wording below). We keep the trained description instruction and simply
+# discard the description downstream: parse_layout strips <img> content for
+# statements, and nanonets.normalize_img_placeholders collapses <img>...</img> to
+# a sentinel for solutions, so no description text ever leaks into the output.
+# The only local addition to the stock prompt is "Do NOT include any style
+# attribute" (table cleanup).
 NANONETS_PROMPT = (
     "Extract the text from the above document as if you were reading it "
-    "naturally. Return the tables in html format. Do NOT include any style attribute. Return the equations in LaTeX "
-    "representation. If there is an image in the document, output an empty "
-    "<img> tag; do not describe the image or add captions. "
-    "Watermarks should "
-    "be wrapped in brackets. Ex: <watermark>OFFICIAL COPY</watermark>. Page "
-    "numbers should be wrapped in brackets. Ex: <page_number>14</page_number> "
-    "or <page_number>9/22</page_number>. Prefer using ☐ and ☑ for "
-    "check boxes."
-    # "Extract the text from the above document as if you were reading it naturally. Return the tables in html format. Return the equations in LaTeX representation. If there is an image in the document and image caption is not present, add a small description of the image inside the  tag; otherwise, add the image caption inside . Watermarks should be wrapped in brackets. Ex: OFFICIAL COPY. Page numbers should be wrapped in brackets. Ex: <page_number>14</page_number> or <page_number>9/22</page_number>. Prefer using ☐ and ☑ for check boxes."
+    "naturally. Return the tables in html format. Do NOT include any style "
+    "attribute. Return the equations in LaTeX representation. If there is an "
+    "image in the document and image caption is not present, add a small "
+    "description of the image inside the <img></img> tag; otherwise, add the "
+    "image caption inside <img></img>. Watermarks should be wrapped in brackets. "
+    "Ex: <watermark>OFFICIAL COPY</watermark>. Page numbers should be wrapped in "
+    "brackets. Ex: <page_number>14</page_number> or <page_number>9/22</page_number>. "
+    "Prefer using ☐ and ☑ for check boxes."
 )
 
 # Hard cap on tokens generated per page. A backstop against runaway loops
