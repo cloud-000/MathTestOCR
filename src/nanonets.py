@@ -21,6 +21,25 @@ from .anchors import _match_marker
 _IMG_RE = re.compile(
     r"<img\b[^>]*>(.*?)</img>|<img\b[^>]*/?>", re.IGNORECASE | re.DOTALL
 )
+
+# Sentinel marking "a figure sits here in reading order", used only while
+# assembling solution text (see pipeline.inline_solution_figures). The model's
+# inline <img> position is unreliable for *which* problem a figure belongs to
+# (DETR decides that geometrically), but it is a useful hint for *where within*
+# an already-assigned solution's text the figure goes. We normalize every <img>
+# tag to this single char so the placement step can count and replace them
+# against DETR's authoritative crop count. U+FFFC (object replacement char)
+# never occurs in real transcription.
+FIGURE_PLACEHOLDER = "\ufffc"
+
+
+def normalize_img_placeholders(text: str) -> str:
+    """Replace every ``<img>`` tag (open/close or self-closing) with the sentinel.
+
+    Used on solution text so a later step can align the model's reading-order
+    figure positions with DETR's actual crops (see FIGURE_PLACEHOLDER).
+    """
+    return _IMG_RE.sub(FIGURE_PLACEHOLDER, text)
 # A whole <table>...</table> block. Kept verbatim so tabular data survives as
 # HTML in the output (both problem statements and solutions). Lazy so adjacent
 # tables don't merge; DOTALL so a table spanning several lines is one match.

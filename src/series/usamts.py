@@ -22,6 +22,7 @@ from pathlib import Path
 from typing_extensions import override
 
 from .. import anchors
+from ..nanonets import normalize_img_placeholders
 from .base import Series, Test
 
 # USAMTS-specific marker patterns. The "N/R/Y." form must come first and capture
@@ -147,7 +148,13 @@ class UsamtsSeries(Series):
                 continue
             if current is not None:
                 bodies[current].append(line)
-        return {n: _split_solution_blocks(lines) for n, lines in bodies.items()}
+        # The raw "<img>" tags survive line-based splitting; normalize each block's
+        # to the reading-order sentinel so the pipeline can align them with DETR's
+        # crops (see pipeline.inline_solution_figures).
+        return {
+            n: [normalize_img_placeholders(b) for b in _split_solution_blocks(lines)]
+            for n, lines in bodies.items()
+        }
 
     @override
     def postprocess(self, problems):

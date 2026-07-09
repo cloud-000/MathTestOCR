@@ -166,15 +166,22 @@ class Series:
         agree with the pipeline's own marker tagging, which assigns the DETR
         figure crops (see pipeline.process_solution_document).
         """
-        from ..nanonets import parse_layout
+        from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
 
         opts = self.layout_options()
         grouped: dict[int, list[str]] = {}
         for item in parse_layout(
             full_text, self.match_marker(), split_marker_table_rows=opts.split_marker_table_rows
         ):
-            if item["kind"] == "text" and item["problem"] is not None:
+            if item["problem"] is None:
+                continue
+            if item["kind"] == "text":
                 grouped.setdefault(item["problem"], []).append(item["text"])
+            elif item["kind"] == "image":
+                # Keep the figure's reading-order position as a sentinel; the
+                # pipeline later aligns these with DETR's crops (see
+                # pipeline.inline_solution_figures).
+                grouped.setdefault(item["problem"], []).append(FIGURE_PLACEHOLDER)
         return {n: "\n".join(parts) for n, parts in grouped.items()}
 
     def solution_index_marker(self, text: str):

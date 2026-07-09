@@ -28,6 +28,7 @@ from src.ocr import OCRModel
 from src.ocr_cache import PARSE_CACHE, SOLUTION_CACHE, OCRCache
 from src.pdf_io import pdf_to_images
 from src.pipeline import (
+    inline_solution_figures,
     ocr_pages,
     process_image,
     process_image_nanonets,
@@ -252,6 +253,11 @@ def _scrape_solutions(args, series, test, sol, dest, model):
                 }
                 for p in problems
             }
+    # Place each figure crop inline in its solution text. Crops are referenced
+    # by a path relative to the output root (out/<series>/<test>/), so the marker
+    # resolves when out/ is served as the document root.
+    path_prefix = f"{series.name}/{test.id}/"
+    solutions = inline_solution_figures(solutions, figures, path_prefix)
     n = output.write_solutions(solutions, dest)
     k = output.write_solution_images(figures, dest)
     print(f"[{series.name}] wrote {n} solution(s), {k} figure crop(s) -> {dest}")

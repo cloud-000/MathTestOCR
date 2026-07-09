@@ -683,3 +683,93 @@ def process_solution_document(
     for number, solution, crop in figure_items:
         figures.setdefault(number, {}).setdefault(solution, []).append(crop)
     return pages_md, figures
+
+
+def _figure_ref(number, solution, k, path_prefix):
+    """Markdown reference to a solution figure crop, as written by output.py."""
+    name = f"problem_{number}_solution_{solution}_image_{k}.png"
+    return f"![]({path_prefix}{name})"
+
+
+def _place_figure_refs(text, refs):
+    """Substitute figure references for the reading-order placeholders in `text`.
+
+    `refs` is the authoritative list of crop references for this block (from
+    DETR), in crop order. Each ``FIGURE_PLACEHOLDER`` left by the OCR marks where
+    the model thought a figure sat; we replace them in order:
+      * placeholders == refs -> exact 1:1 placement;
+      * more placeholders than refs -> fill the first, drop the extras (the model
+        over-emitted <img> tags on text-only spans);
+      * fewer placeholders than refs -> fill what we have, append the rest at the
+        end (the model missed some -- crop is kept, position is best-effort).
+    With no refs, any stray placeholders are removed. No crop is ever dropped and
+    no reference is ever left dangling.
+    """
+    segments = text.split(nanonets_mod.FIGURE_PLACEHOLDER)
+    n_placeholders = len(segments) - 1
+    if not refs:
+        return _tidy("".join(segments))
+    out = [segments[0]]
+    for i in range(1, len(segments)):
+        if i - 1 < len(refs):
+            out.append(f"\n\n{refs[i - 1]}\n\n")
+        out.append(segments[i])
+    joined = "".join(out)
+    if len(refs) > n_placeholders:
+        trailing = "".join(f"\n\n{r}" for r in refs[n_placeholders:])
+        joined = joined.rstrip() + trailing
+    return _tidy(joined)
+
+
+def _tidy(text):
+    """Collapse the blank-line runs the ref insertions introduce; strip ends."""
+    import re
+
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def inline_solution_figures(solutions, figures, path_prefix=""):
+    """Place each DETR solution-figure crop inline in its solution text.
+
+    Joins the two halves of the "where does this figure go" signal: `figures`
+    (from DETR -- the authoritative crops per problem and solution index, keyed
+    {number: {solution_index: [crop, ...]}}) and the reading-order placeholders
+    the OCR left in `solutions` (see nanonets.FIGURE_PLACEHOLDER). Returns a new
+    solutions map of the same shape (a string per problem, or a list of solution
+    strings) with each crop referenced as ``![](<path_prefix><crop name>)`` at
+    its position. `path_prefix` is prepended to every crop filename (e.g.
+    ``"usamts/2012_round1/"`` so paths resolve from the output root).
+
+    A solution with no detected figures is returned unchanged except that stray
+    placeholders are stripped. Figure groups whose solution index has no matching
+    text block are appended to the problem's last block, so every crop that was
+    written to disk is referenced exactly once.
+    """
+    result = {}
+    for number, value in solutions.items():
+        per_solution = figures.get(number, {})
+        is_list = isinstance(value, (list, tuple))
+        blocks = list(value) if is_list else [value]
+        used = set()
+        new_blocks = []
+        for i, text in enumerate(blocks):
+            solution = i + 1
+            crops = per_solution.get(solution, [])
+            refs = [_figure_ref(number, solution, k, path_prefix) for k in range(1, len(crops) + 1)]
+            new_blocks.append(_place_figure_refs(text, refs))
+            if crops:
+                used.add(solution)
+        leftover = [
+            _figure_ref(number, solution, k, path_prefix)
+            for solution, crops in sorted(per_solution.items())
+            if solution not in used
+            for k in range(1, len(crops) + 1)
+        ]
+        if leftover:
+            tail = "".join(f"\n\n{r}" for r in leftover)
+            if new_blocks:
+                new_blocks[-1] = _tidy(new_blocks[-1].rstrip() + tail)
+            else:
+                new_blocks = [_tidy(tail)]
+        result[number] = new_blocks if is_list else "\n".join(new_blocks)
+    return result
