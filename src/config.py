@@ -74,6 +74,12 @@ NANONETS_REPEAT_WINDOW = 1200
 NANONETS_REPEAT_PROBE = 48
 NANONETS_REPEAT_COUNT = 4
 NANONETS_REPEAT_MAX_GAP = NANONETS_REPEAT_PROBE * 6
+# The filler-only exemption in _is_runaway still catches a runaway made entirely
+# of filler (e.g. "- - - - -" or "____..."): a real rule/leader/answer-blank
+# spans one row, but a generation loop emits an unbounded run. An unbroken
+# trailing filler run at least this long is treated as a loop. Comfortably above
+# any single-row layout element, well below the token cap.
+NANONETS_FILLER_MAX_RUN = 400
 
 # Picture->problem mapping is geometric: each non-blank DETR Picture is assigned
 # to the problem whose statement it vertically sits in. Nanonets' inline <img>

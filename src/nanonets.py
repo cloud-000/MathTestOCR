@@ -80,7 +80,9 @@ def _is_runaway(text: str) -> bool:
     ("The numbers 24, A-1 ... are written in the dodecagons." x N). We catch it
     by checking whether the final probe-sized slice recurs several times in a
     tight cluster near the end of the recent window. Filler-only tails (rows of
-    underscores/dots) are ignored.
+    underscores/dots/dashes) are ignored unless the unbroken filler run grows
+    past `config.NANONETS_FILLER_MAX_RUN` -- a real rule/leader spans one row, a
+    loop stuck on filler ("- - - - -") does not.
 
     Tag *attributes* are collapsed first (`<span style="...">` -> `<span>`) so a
     long identical style string emitted once per cell -- e.g. an answer key's
@@ -95,8 +97,22 @@ def _is_runaway(text: str) -> bool:
     text = _TAG_ATTR_RE.sub(r"<\1\2>", text[-2 * config.NANONETS_REPEAT_WINDOW :])
     tail = text[-config.NANONETS_REPEAT_WINDOW :]
     probe = tail[-config.NANONETS_REPEAT_PROBE :]
-    if len(probe) < config.NANONETS_REPEAT_PROBE or set(probe) <= _FILLER_CHARS:
+    if len(probe) < config.NANONETS_REPEAT_PROBE:
         return False
+    if set(probe) <= _FILLER_CHARS:
+        # Filler-only tail: normally a legitimate rule/leader/answer-blank, so
+        # ignored -- but those span one row. A generation loop stuck on filler
+        # ("- - - - -", "____...") emits an unbounded run, so an over-long
+        # unbroken trailing filler run is itself a runaway. (Filler chars are
+        # untouched by the tag-attr collapse above, so measuring on `tail` is
+        # exact.)
+        run = 0
+        for ch in reversed(tail):
+            if ch in _FILLER_CHARS:
+                run += 1
+            else:
+                break
+        return run >= config.NANONETS_FILLER_MAX_RUN
 
     positions = []
     start = 0
