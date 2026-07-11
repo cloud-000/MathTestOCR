@@ -56,32 +56,68 @@ class MpfgSeries(Series):
         return sol if sol.exists() else None
 
     def answer_source(self, test):
-        """The answers live in the solutions PDF."""
+        """The answers live in the solutions PDF (mathprize only).
+
+        The olympiad division is proof-based and prints no short answers, so its
+        solution pages carry no "Answer:" label and `parse_answers` yields {}.
+        """
         return self.solution_source(test)
 
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:
-        """Parse answers from the solutions PDF pages.
+        """Parse the short answer for each problem from the solutions OCR.
 
-        Each problem block contains "Answer: <answer>" followed by "Solution:".
+        Every mathprize problem block prints ``Answer: <value>`` immediately
+        before ``Solution:``; the value is the cleanest source of the final
+        answer (cleaner than the in-text ``\\boxed{...}``, which the OCR
+        occasionally drops, and than the PDF text layer, which flattens stacked
+        fractions like ``27/25`` into an ambiguous ``27 25``). The label carries
+        proper ``$...$`` LaTeX, matching the answer-key convention.
+
+        Markers and the ``Answer:``/``Solution:`` labels may be wrapped in
+        markdown bold (``**Problem 7**``), so every anchor tolerates surrounding
+        ``*``. When a page break falls between the answer and ``Solution:``, the
+        running header/footer and page number leak into the captured span, so
+        the value is taken as the first line that is real answer content.
         """
+        full_text = "\n".join(pages_markdown)
         answers = {}
-        full_text = "\n\n".join(pages_markdown)
-        pattern = re.compile(
-            r"Problem\s+(\d+)\s+.*?Answer:\s*(.*?)\s*(?:Solution:|\Z)",
-            re.DOTALL | re.IGNORECASE
-        )
-        for p_num, ans in pattern.findall(full_text):
-            ans_lines = []
-            for line in ans.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                # Strip out headers/footers that might appear from OCR
-                if "Math Prize" in line or "Solutions" in line:
-                    continue
-                if line.isdigit() and (not ans_lines or len(line) <= 2):
-                    # Skip page numbers
-                    continue
-                ans_lines.append(line)
-            answers[int(p_num)] = " ".join(ans_lines).strip()
+        marks = list(self._MARKER_RE.finditer(full_text))
+        for m, nxt in zip(marks, marks[1:] + [None]):
+            end = nxt.start() if nxt is not None else len(full_text)
+            block = full_text[m.end():end]
+            am = re.search(
+                r"Answer:\*{0,2}\s*(.*?)\s*(?:\*{0,2}Solution:|\Z)",
+                block,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if am is None:
+                continue
+            value = self._clean_answer(am.group(1))
+            if value:
+                answers[int(m.group(1))] = value
         return answers
+
+    # Problem marker as it appears in the solutions OCR, tolerating markdown bold.
+    _MARKER_RE = re.compile(r"\*{0,2}Problem\s+(\d+)\*{0,2}", re.IGNORECASE)
+    # Running header/footer ("... Math Prize for Girls YYYY Solutions ...").
+    _HEADER_RE = re.compile(r"math prize|advantage testing|for girls", re.IGNORECASE)
+
+    @classmethod
+    def _clean_answer(cls, raw: str) -> str:
+        """Return the answer value from the span after ``Answer:``.
+
+        The value is the first line with real content. On a page break the
+        running header/logo/page number splice into the captured span, but only
+        *after* the value (the label and its value are printed together), so
+        returning at the first content line skips that junk without a
+        content-based filter that might misfire on a short numeric answer. The
+        header/logo skips guard only against a stray blank-then-header ordering.
+        """
+        for line in raw.splitlines():
+            s = line.strip().strip("*").strip()
+            if not s:
+                continue
+            if s.startswith("<img") or cls._HEADER_RE.search(s):
+                continue
+            return s.rstrip(".").strip()
+        return ""
