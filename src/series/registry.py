@@ -2,12 +2,13 @@
 
 from .mandelbrot import MandelbrotSeries
 from .mathcounts import MathcountsSeries
+from .mpfg import MpfgSeries
 from .purplecomet import PurpleCometSeries
 from .usamts import UsamtsSeries
 
 SERIES = {
     s.name: s
-    for s in (UsamtsSeries(), PurpleCometSeries(), MandelbrotSeries(), MathcountsSeries())
+    for s in (UsamtsSeries(), PurpleCometSeries(), MandelbrotSeries(), MathcountsSeries(), MpfgSeries())
 }
 
 

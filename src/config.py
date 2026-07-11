@@ -229,6 +229,7 @@ SERIES_DATA_DIRS = {
     "purplecomet": _MATHTESTS_ROOT / "PurpleComet" / "out",
     "mandelbrot": _MATHTESTS_ROOT / "Mandelbrot" / "out",
     "mathcounts": _MATHTESTS_ROOT / "Mathcounts" / "out",
+    "mpfg": _MATHTESTS_ROOT / "MPfG" / "out",
 }
 
 # A Mathcounts <year>/<level> folder mixes problem rounds with answer/solution
