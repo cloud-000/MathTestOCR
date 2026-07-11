@@ -793,7 +793,7 @@ def _tidy(text):
 
 
 def inline_problem_figures(problems, path_prefix=""):
-    """Place each statement figure crop inline in its problem text, in place.
+    """Reference each statement figure crop from its problem text, in place.
 
     The statement counterpart to `inline_solution_figures`. Joins the two halves
     of the "where does this figure go" signal: the DETR crops (the image elements
@@ -802,10 +802,18 @@ def inline_problem_figures(problems, path_prefix=""):
     sentinels `process_image_nanonets` left in the text when the series set
     `LayoutOptions.inline_figures`. Each `Problem`'s text elements are collapsed
     into one whose text carries a ``![](<path_prefix>problem_<n>_image_<k>.png)``
-    ref at each figure's position; the image elements are kept unchanged and in
-    order so the saved crop names still line up. Count mismatches degrade exactly
-    as on the solution side (`_place_figure_refs`): no crop is dropped, no ref
-    dangles. Returns `problems` (mutated in place) for convenience.
+    ref (a path rooted at the output dir) for every figure; the image elements
+    are kept unchanged and in order so the saved crop names still line up.
+
+    Runs for every series, in both figure modes -- the point is that a problem's
+    images are discoverable from problems.json, not only by globbing crop files:
+      * inline_figures set   -> placeholders present, refs land at the model's
+        <img> positions;
+      * inline_figures unset -> no placeholders, so `_place_figure_refs` appends
+        all refs at the end (position unknown, but the crop is still referenced).
+    Count mismatches degrade exactly as on the solution side
+    (`_place_figure_refs`): no crop is dropped, no ref dangles. Returns
+    `problems` (mutated in place) for convenience.
     """
     for prob in problems:
         images = [el for el in prob.elements if el.kind == "image" and el.crop is not None]

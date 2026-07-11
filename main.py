@@ -149,8 +149,12 @@ def _cmd_parse_batch(args):
             problems = _parse_one_test(
                 series, test, args.engine, model, args.threshold, cache=cache, layout=layout
             )
-            if layout.inline_figures:
-                inline_problem_figures(problems, f"{series.name}/{test.id}/")
+            # Reference every figure crop from the statement text so a problem's
+            # images are discoverable from problems.json alone, not only by
+            # globbing crop files. With inline_figures the refs land at the
+            # model's <img> positions; without it (no placeholders emitted) they
+            # append at the end -- both handled by _place_figure_refs.
+            inline_problem_figures(problems, f"{series.name}/{test.id}/")
             n = output.write_problems(problems, dest)
             print(f"[{series.name}] wrote {n} problem(s) -> {dest}")
     finally:
