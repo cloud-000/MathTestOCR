@@ -129,6 +129,22 @@ class Series:
         """Hook to clean up the merged problem list. Default: unchanged."""
         return problems
 
+    def duplicate_scope(self, test_id: str, across: bool = False):
+        """Return a comparison-scope key for `dedup`, or None to opt out.
+
+        The `dedup` command only compares problem statements whose tests share a
+        scope. The default None disables duplicate detection for the series --
+        conservative and series-agnostic, like `layout_options`. A series that
+        reuses problems across sibling tests overrides this to bucket them:
+        PUMaC returns the year, so its A/B divisions (and subject rounds) of a
+        given year are compared against each other but not across years.
+
+        `across` is the command's ``--across-years``: an opted-in series should
+        widen its bucket (PUMaC drops the year so every test is comparable),
+        while None stays None either way.
+        """
+        return None
+
     def layout_options(self):
         """Return the nanonets layout/figure heuristics for this series.
 

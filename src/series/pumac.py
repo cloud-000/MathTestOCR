@@ -100,6 +100,19 @@ class PumacSeries(Series):
         return config.LayoutOptions(header_picture_frac=0.12)
 
     @override
+    def duplicate_scope(self, test_id, across=False):
+        """Bucket by year. PUMaC reuses problems across a year's A/B divisions
+        (and, less often, its subject rounds), so every ``<year>_*`` test --
+        ``2018_A_algebra``, ``2018_B_algebra``, ``2018_team``, ... -- is compared
+        together, but never against a different year's tests.
+
+        With ``across=True`` (``dedup --across-years``) the year is dropped and
+        every test shares one bucket, catching problems recycled across years."""
+        if across:
+            return "all"
+        return test_id.split("_", 1)[0]
+
+    @override
     def solution_source(self, test):
         """The fixed-name sibling ``solutions.pdf``, or None if absent.
 

@@ -278,3 +278,21 @@ MATHCOUNTS_TEST_ROUNDS = {
     "workouts",
     "masters",
 }
+
+# --- Cross-test duplicate detection (`main.py dedup --series <name>`) ---
+# Some series reuse the same problem across sibling tests (PUMaC shares problems
+# between its A and B divisions of the same year). `dedup` compares problem
+# statements *within a scope* (a Series.duplicate_scope bucket -- PUMaC uses the
+# year) and records near-duplicate groups in <series>/duplicates.json.
+#
+# Statements are normalized then reduced to a set of character k-grams
+# (shingles); two are duplicates when their Jaccard similarity clears the
+# threshold. k=4 is small enough to survive light OCR drift yet long enough that
+# unrelated prose rarely overlaps; 0.85 flags reworded/OCR-variant reuse while
+# leaving merely similar problems (same shape, different numbers) apart.
+DEDUP_SHINGLE_K = 4
+DEDUP_THRESHOLD = 0.85
+# Statements shorter than this (normalized) are too small for shingle Jaccard to
+# be meaningful -- a one-line answer-blank prompt would match many others. They
+# are compared by normalized-exact equality instead.
+DEDUP_MIN_SHINGLE_LEN = 40

@@ -18,6 +18,7 @@ Examples:
 """
 
 import argparse
+import json
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -364,6 +365,88 @@ def _answer_cache_path(out_root, data_dir, src):
     return Path(out_root) / "_answers_ocr" / f"{stem}.json"
 
 
+def _preview(text, limit=160):
+    """A single-line, length-capped snippet of a statement, for the manifest."""
+    s = " ".join(text.split())
+    return s if len(s) <= limit else s[: limit - 1].rstrip() + "…"
+
+
+def cmd_dedup(args):
+    """Record problems shared across a series' tests into <series>/duplicates.json.
+
+    Reads each already-parsed test's problems.json, buckets problems by the
+    series' `duplicate_scope`, and groups near-duplicate statements (see
+    `src.dedup`). Non-invasive: the per-test output is untouched; only the
+    central manifest is written.
+    """
+    from src import dedup
+
+    series = get_series(args.series)
+    out_root = Path(args.out) / series.name
+    if not out_root.is_dir():
+        raise SystemExit(
+            f"[{series.name}] no output dir {out_root}; parse the series first"
+        )
+    threshold = args.threshold if args.threshold is not None else config.DEDUP_THRESHOLD
+
+    entries = []
+    texts = {}
+    scoped_tests = 0
+    for test_dir in sorted(p for p in out_root.iterdir() if p.is_dir()):
+        pj = test_dir / "problems.json"
+        if not pj.exists():
+            continue
+        scope = series.duplicate_scope(test_dir.name, across=args.across_years)
+        if scope is None:
+            continue
+        scoped_tests += 1
+        problems = json.loads(pj.read_text())
+        for num, text in problems.items():
+            ref = dedup.ProblemRef(test=test_dir.name, problem=str(num))
+            entries.append((scope, ref, text))
+            texts[ref] = text
+
+    if scoped_tests == 0:
+        print(
+            f"[{series.name}] no parsed test defines a duplicate_scope; "
+            "nothing to compare"
+        )
+        return
+
+    groups = dedup.find_duplicate_groups(
+        entries,
+        threshold=threshold,
+        k=config.DEDUP_SHINGLE_K,
+        min_shingle_len=config.DEDUP_MIN_SHINGLE_LEN,
+    )
+
+    manifest = {
+        "series": series.name,
+        "threshold": threshold,
+        "shingle_k": config.DEDUP_SHINGLE_K,
+        "groups": [
+            {
+                "group": i + 1,
+                "scope": g.scope,
+                "similarity": g.similarity,
+                "preview": _preview(texts[g.members[0]]),
+                "members": [
+                    {"test": m.test, "problem": m.problem} for m in g.members
+                ],
+            }
+            for i, g in enumerate(groups)
+        ],
+    }
+    dest = out_root / "duplicates.json"
+    dest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+
+    dup_problems = sum(len(g.members) for g in groups)
+    print(
+        f"[{series.name}] {len(groups)} duplicate group(s) covering "
+        f"{dup_problems} problem(s) across {scoped_tests} test(s) -> {dest}"
+    )
+
+
 def cmd_pdf(args):
     paths = pdf_to_images(args.pdf, args.out)
     print(f"Wrote {len(paths)} page images to {args.out}")
@@ -444,6 +527,29 @@ def main():
     )
     _add_engine_args(p_sol)
     p_sol.set_defaults(func=cmd_solutions)
+
+    p_dedup = sub.add_parser(
+        "dedup", help="record problems shared across a series' tests"
+    )
+    p_dedup.add_argument("--series", required=True, choices=series_names())
+    p_dedup.add_argument(
+        "--out",
+        default=config.DEFAULT_OUT_DIR,
+        help="output root holding <series>/<test>/ (default: %(default)s)",
+    )
+    p_dedup.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help=f"Jaccard similarity cutoff (default: {config.DEDUP_THRESHOLD})",
+    )
+    p_dedup.add_argument(
+        "--across-years",
+        action="store_true",
+        help="compare every test together instead of only within each year "
+        "(catches problems recycled across years)",
+    )
+    p_dedup.set_defaults(func=cmd_dedup)
 
     p_pdf = sub.add_parser("pdf", help="convert a PDF to page images")
     p_pdf.add_argument("pdf")
