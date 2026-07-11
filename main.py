@@ -19,6 +19,7 @@ Examples:
 
 import argparse
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from src import config, output
@@ -98,10 +99,23 @@ def _filter_existing(series, tests, out_root, existing):
     return selected
 
 
-def _parse_one_test(series, test, engine, model, threshold, cache=None):
+def _resolve_layout(series, args):
+    """Series LayoutOptions with the CLI ``--temp`` override applied (CLI wins).
+
+    ``--temp`` sets the base OCR temperature (rung 0 of the runaway-recovery
+    ladder), overriding whatever the series' LayoutOptions specifies -- the
+    manual escape hatch for a test whose grids loop even after auto-escalation.
+    """
+    layout = series.layout_options()
+    if getattr(args, "temp", None) is not None:
+        layout = replace(layout, nanonets_temperature=args.temp)
+    return layout
+
+
+def _parse_one_test(series, test, engine, model, threshold, cache=None, layout=None):
     """Render a test to pages and parse them into a merged, post-processed list."""
     match = series.match_marker()
-    layout = series.layout_options()
+    layout = layout if layout is not None else series.layout_options()
     with tempfile.TemporaryDirectory(prefix="comp-ocr-") as workdir:
         pages = series.test_pages(test, workdir)
         problems = process_test(
@@ -122,6 +136,7 @@ def _cmd_parse_batch(args):
     if not tests:
         return
 
+    layout = _resolve_layout(series, args)
     model = _open_engine(args.engine)
     try:
         for test in tests:
@@ -132,9 +147,9 @@ def _cmd_parse_batch(args):
             print(f"[{series.name}] parsing {test.id} ...")
             cache = OCRCache(dest / PARSE_CACHE, enabled=args.cache)
             problems = _parse_one_test(
-                series, test, args.engine, model, args.threshold, cache=cache
+                series, test, args.engine, model, args.threshold, cache=cache, layout=layout
             )
-            if series.layout_options().inline_figures:
+            if layout.inline_figures:
                 inline_problem_figures(problems, f"{series.name}/{test.id}/")
             n = output.write_problems(problems, dest)
             print(f"[{series.name}] wrote {n} problem(s) -> {dest}")
@@ -148,8 +163,13 @@ def _cmd_parse_single(args):
         threshold = (
             args.threshold if args.threshold is not None else config.NANONETS_DETECT_THRESHOLD
         )
+        layout = (
+            config.LayoutOptions(nanonets_temperature=args.temp)
+            if args.temp is not None
+            else None
+        )
         problems, detections, groups = process_image_nanonets(
-            args.image, NanonetsClient(), threshold
+            args.image, NanonetsClient(), threshold, layout=layout
         )
         ocr = None
     else:
@@ -244,7 +264,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
                 args.threshold,
                 match=series.match_marker(),
                 cache=cache,
-                layout=series.layout_options(),
+                layout=_resolve_layout(series, args),
                 clean_page=series.clean_solution_markdown,
                 source_pdf=sol,
                 match_solution=series.solution_index_marker,
@@ -259,7 +279,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
             problems = series.postprocess(
                 process_test(
                     pages, args.engine, model, args.threshold, series.match_marker(),
-                    cache=cache, layout=series.layout_options(),
+                    cache=cache, layout=_resolve_layout(series, args),
                 )
             )
             solutions = {p.number: p.text for p in problems}
@@ -317,7 +337,7 @@ def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, so
                 )
             with tempfile.TemporaryDirectory(prefix="comp-ocr-ans-") as workdir:
                 pages = series.test_pages(Test(id=test.id, source=src), workdir)
-                pages_md = ocr_pages(pages, model, cache=cache, layout=series.layout_options())
+                pages_md = ocr_pages(pages, model, cache=cache, layout=_resolve_layout(series, args))
         answers = series.parse_answers(test, pages_md)
     if not answers:
         print(f"[{series.name}] skip {test.id} (no answers found)")
@@ -357,6 +377,14 @@ def _add_engine_args(p):
         type=float,
         default=None,
         help="DETR detection confidence (default: engine-specific)",
+    )
+    p.add_argument(
+        "--temp",
+        type=float,
+        default=None,
+        help="base nanonets OCR temperature, overriding the series default "
+        "(rung 0 of the runaway-recovery ladder). Raise for a test whose grids "
+        "still loop after auto-escalation, e.g. --temp 0.4.",
     )
     p.add_argument(
         "--out",

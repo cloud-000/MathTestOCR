@@ -213,16 +213,37 @@ class NanonetsClient:
             print(f"[nanonets] using model: {self._model}")
         return self._model
 
-    def parse_page(self, image: Image.Image, temperature: float = config.NANONETS_TEMPERATURE) -> str:
-        """Return the raw markdown transcription of a whole page image.
+    def parse_page(
+        self,
+        image: Image.Image,
+        temperature: float = config.NANONETS_TEMPERATURE,
+        mask_boxes=None,
+    ) -> tuple[str, bool]:
+        """OCR a whole page image; return ``(markdown, runaway)``.
 
         `temperature` defaults to the greedy `config.NANONETS_TEMPERATURE` (0.0)
         for deterministic, faithful transcription; a series can raise it via its
         LayoutOptions when greedy decoding loops on its pages (see
-        `config.LayoutOptions.nanonets_temperature`).
+        `config.LayoutOptions.nanonets_temperature`), and `pipeline._ocr_page`
+        escalates it further to recover a looping page.
+
+        `mask_boxes` is an optional list of ``(x0, y0, x1, y1)`` rectangles to
+        blank (fill `config.NANONETS_MASK_FILL`) before transcription -- the
+        figure-masking rung of the runaway ladder passes DETR's figure boxes so
+        the looping region is gone. The returned bool is True when the stream was
+        aborted by the runaway guard (a truncated, incomplete transcription); the
+        caller uses it to decide whether to retry and whether to cache.
         """
+        image = image.convert("RGB")
+        if mask_boxes:
+            from PIL import ImageDraw
+
+            image = image.copy()
+            draw = ImageDraw.Draw(image)
+            for box in mask_boxes:
+                draw.rectangle(tuple(box), fill=config.NANONETS_MASK_FILL)
         buf = io.BytesIO()
-        image.convert("RGB").save(buf, format="PNG")
+        image.save(buf, format="PNG")
         url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
         resp = self._client.chat.completions.create(
             model=self.model,
@@ -242,6 +263,7 @@ class NanonetsClient:
         print("[nanonets] Streaming response:")
         full_content = []
         total = 0  # running char count, to throttle the runaway check
+        runaway = False
         for chunk in resp:
             content = chunk.choices[0].delta.content
             if content:
@@ -254,9 +276,10 @@ class NanonetsClient:
                 ):
                     print("\n[nanonets] runaway repetition detected; aborting stream")
                     resp.close()
+                    runaway = True
                     break
         print("\n[nanonets] Images processed / streaming complete")
-        return _close_dangling_img("".join(full_content))
+        return _close_dangling_img("".join(full_content)), runaway
 
 
 def _clean_text_line(line: str) -> str:

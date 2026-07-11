@@ -57,6 +57,25 @@ class OCRCache:
             self._flush()
         return markdown
 
+    def get(self, page_path):
+        """Cached markdown for `page_path`, or None on a miss / when disabled.
+
+        The check-then-store counterpart to `page_markdown`, for callers that run
+        their own OCR between the lookup and the write (see `pipeline._ocr_page`,
+        which retries a looping page and stores only a clean transcription).
+        """
+        key = Path(page_path).name
+        if self.enabled and key in self._data:
+            print(f"[cache] hit {key} ({self.path.name})")
+            return self._data[key]
+        return None
+
+    def put(self, page_path, markdown):
+        """Store `markdown` for `page_path` (no-op when disabled)."""
+        if self.enabled:
+            self._data[Path(page_path).name] = markdown
+            self._flush()
+
     def _flush(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self._data, ensure_ascii=False, indent=0))

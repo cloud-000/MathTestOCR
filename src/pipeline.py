@@ -263,6 +263,52 @@ def _assign_pictures(detections, image, problem_seq, layout):
     return groups
 
 
+def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=None):
+    """Whole-page OCR with runaway recovery; returns the page markdown.
+
+    Nanonets' decoding can get stuck in a verbatim loop on a grid/dense figure
+    (endless ``<td>`` rows, a repeated figure description). The stream guard
+    aborts it, but that truncates every problem below it on the page. Instead of
+    losing the page we recover it: re-OCR at each escalating
+    `config.NANONETS_RETRY_TEMPS` above `base_temp` (breaking most loops), and as
+    a guaranteed-terminating last resort blank the `mask_boxes` figure regions
+    (whose interiors the text pass never needs -- DETR keeps the crops) and OCR
+    once more. Only a clean (non-runaway) transcription is cached, so ``--cache``
+    never re-serves a truncated page; if every rung still loops we return the
+    best-effort truncated text uncached.
+
+    `cache_key` is the page path used for cache lookup/store (None disables
+    caching for this call). `mask_boxes` are the figure rectangles for the final
+    rung; when empty the masking rung is skipped (e.g. answer pages with no
+    detection pass).
+    """
+    if cache is not None and cache_key is not None:
+        hit = cache.get(cache_key)
+        if hit is not None:
+            return hit
+    temps = [base_temp] + [t for t in config.NANONETS_RETRY_TEMPS if t > base_temp]
+    for i, temp in enumerate(temps):
+        if i:
+            print(f"[nanonets] runaway; retrying at temperature {temp}")
+        markdown, runaway = client.parse_page(image, temp)
+        if not runaway:
+            break
+    else:
+        if mask_boxes:
+            print("[nanonets] runaway persists; masking figures and re-OCRing")
+            markdown, runaway = client.parse_page(
+                image, temps[-1], mask_boxes=mask_boxes
+            )
+    if cache is not None and cache_key is not None and not runaway:
+        cache.put(cache_key, markdown)
+    return markdown
+
+
+def _figure_mask_boxes(detections):
+    """Figure rectangles (DETR Picture/Table) to blank on the masking rung."""
+    return [d["box"] for d in detections if d["label"] in config.IMAGE_LABELS]
+
+
 def process_image_nanonets(
     image_path,
     client,
@@ -292,11 +338,14 @@ def process_image_nanonets(
     detections = detect.detect(image, threshold)
     print("[nanonets] Layout detection done.")
     print("[nanonets] Running whole-page OCR (Nanonets)...")
-    temp = layout.nanonets_temperature
-    if cache is not None:
-        markdown = cache.page_markdown(image_path, lambda: client.parse_page(image, temp))
-    else:
-        markdown = client.parse_page(image, temp)
+    markdown = _ocr_page(
+        client,
+        image,
+        layout.nanonets_temperature,
+        cache=cache,
+        cache_key=image_path,
+        mask_boxes=_figure_mask_boxes(detections),
+    )
     print("[nanonets] Nanonets OCR done.")
     items = nanonets_mod.parse_layout(
         markdown, match_marker, split_marker_table_rows=layout.split_marker_table_rows
@@ -387,15 +436,15 @@ def ocr_pages(page_paths, client, cache=None, layout=None):
     series' LayoutOptions (only its OCR temperature is used here).
     """
     layout = layout or config.LayoutOptions()
-    temp = layout.nanonets_temperature
     parts = []
     for path in page_paths:
-        if cache is not None:
-            markdown = cache.page_markdown(
-                path, lambda p=path: client.parse_page(Image.open(p).convert("RGB"), temp)
-            )
-        else:
-            markdown = client.parse_page(Image.open(path).convert("RGB"), temp)
+        markdown = _ocr_page(
+            client,
+            Image.open(path).convert("RGB"),
+            layout.nanonets_temperature,
+            cache=cache,
+            cache_key=path,
+        )
         parts.append(markdown)
     return parts
 
@@ -632,10 +681,18 @@ def process_solution_document(
     carry_solutions = {}  # problem -> solution index in progress across pages
     for index, path in enumerate(page_paths):
         image = Image.open(path).convert("RGB")
-        if cache is not None:
-            markdown = cache.page_markdown(path, lambda: client.parse_page(image, temp))
-        else:
-            markdown = client.parse_page(image, temp)
+        # Detection runs before OCR (it re-runs every page regardless) so its
+        # figure boxes are available to mask a looping region on the final
+        # runaway-recovery rung (see _ocr_page).
+        detections = detect.detect(image, thr)
+        markdown = _ocr_page(
+            client,
+            image,
+            temp,
+            cache=cache,
+            cache_key=path,
+            mask_boxes=_figure_mask_boxes(detections),
+        )
         pages_md.append(markdown)
         if clean_page is not None:
             markdown = clean_page(index, markdown)
@@ -645,7 +702,6 @@ def process_solution_document(
             split_marker_table_rows=layout.split_marker_table_rows,
             start_problem=carry,
         )
-        detections = detect.detect(image, thr)
         pics = _sorted_pictures(detections, image, layout.max_picture_area_frac)
         assigned = None
         if pics and doc is not None:

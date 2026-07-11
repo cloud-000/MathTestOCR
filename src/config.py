@@ -34,6 +34,22 @@ NANONETS_DETECT_THRESHOLD = 0.5
 # temperatures trade transcription fidelity for loop-breaking.
 NANONETS_TEMPERATURE = 0.0
 
+# Runaway recovery ladder. When greedy decoding degenerates into a verbatim loop
+# on a grid/dense figure (endless <td> rows, a repeated figure description) the
+# stream guard aborts mid-page -- truncating every problem below it. Rather than
+# lose the page, `pipeline._ocr_page` re-OCRs it at each of these escalating
+# temperatures in turn (breaking most loops while keeping fidelity as high as
+# still works). Tried after the base temperature (a series' LayoutOptions value
+# or the CLI --temp override); values already <= the base are skipped.
+NANONETS_RETRY_TEMPS = (0.2, 0.4)
+# Last-resort fill for the figure-masking rung. After every temperature above
+# has still looped, `_ocr_page` blanks the DETR figure regions (Picture/Table --
+# their interiors the text pass never needs, since DETR keeps the crops) and
+# OCRs once more; with the looping content gone this terminates. White (the page
+# background) reads as blank so nothing is transcribed there, unlike a black box
+# the model may itself try to describe.
+NANONETS_MASK_FILL = "white"
+
 # Standard Nanonets-OCR prompt. The <img></img> tags it emits at each figure's
 # location (in reading order) are the reading-order position signal we use to
 # place figure crops inline (see pipeline.inline_solution_figures).
