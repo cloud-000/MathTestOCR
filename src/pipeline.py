@@ -92,12 +92,16 @@ def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD, 
     return problems, detections, groups
 
 
-def _sorted_pictures(detections, image, max_area_frac=None):
+def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None):
     """Non-blank DETR Picture detections, top-to-bottom (reading order).
 
     `max_area_frac` (from a series' LayoutOptions) optionally drops any Picture
     covering more than that fraction of the page -- a whole-page layout
     misclassification. None (the default) keeps every non-blank Picture.
+
+    `header_frac` (also from LayoutOptions) optionally drops any Picture whose
+    vertical center is within that fraction of the page height from the top --
+    the running-header logo/title band (see config.header_picture_frac).
     """
     pics = [
         d
@@ -107,6 +111,9 @@ def _sorted_pictures(detections, image, max_area_frac=None):
     if max_area_frac is not None:
         max_area = max_area_frac * image.width * image.height
         pics = [d for d in pics if _box_area(d["box"]) <= max_area]
+    if header_frac is not None:
+        cutoff = header_frac * image.height
+        pics = [d for d in pics if (d["box"][1] + d["box"][3]) / 2 > cutoff]
     pics = _drop_nested_pictures(pics)
     pics.sort(key=lambda d: (d["box"][1], d["box"][0]))
     return pics
@@ -232,7 +239,9 @@ def _assign_pictures(detections, image, problem_seq, layout):
     filter (`max_picture_area_frac`) and whether the gap-based problem-start
     fallback is used when DETR's left-margin count disagrees with nanonets'.
     """
-    pics = _sorted_pictures(detections, image, layout.max_picture_area_frac)
+    pics = _sorted_pictures(
+        detections, image, layout.max_picture_area_frac, layout.header_picture_frac
+    )
     if not pics or not problem_seq:
         return {}
     starts = _problem_start_ys(detections, image, layout.problem_start_from_headers)
@@ -702,7 +711,9 @@ def process_solution_document(
             split_marker_table_rows=layout.split_marker_table_rows,
             start_problem=carry,
         )
-        pics = _sorted_pictures(detections, image, layout.max_picture_area_frac)
+        pics = _sorted_pictures(
+            detections, image, layout.max_picture_area_frac, layout.header_picture_frac
+        )
         assigned = None
         if pics and doc is not None:
             # pdf_io names rendered pages "page_<pdf page number>.png".

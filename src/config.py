@@ -157,6 +157,15 @@ class LayoutOptions:
     # Drop any DETR Picture covering more than this fraction of the page area
     # (a whole-page layout misclassification). None -> keep every Picture.
     max_picture_area_frac: float | None = None
+    # Drop any DETR Picture whose vertical *center* sits within this fraction of
+    # the page height from the top -- the running page-header band. Some series
+    # print a decorative logo (and a stylized title banner DETR also reads as a
+    # Picture) in the header of every page; those sit above the first problem but
+    # the "drop pictures above the first problem" guard misses them when the
+    # title text is itself a left-margin start (see pipeline._assign_pictures).
+    # None -> keep header-region pictures. Only PUMaC (Princeton shield logo)
+    # opts in; keep the band small enough to never reach a real figure.
+    header_picture_frac: float | None = None
     # When DETR's left-margin problem-start count disagrees with nanonets'
     # problem count, fall back to splitting page content at the largest vertical
     # gaps (see pipeline._gap_based_starts). Off by default: on pages with

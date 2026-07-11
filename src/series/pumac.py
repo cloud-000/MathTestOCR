@@ -26,7 +26,7 @@ from pathlib import Path
 
 from typing_extensions import override
 
-from .. import anchors
+from .. import anchors, config
 from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
 from .base import Series, Test
 
@@ -84,6 +84,20 @@ class PumacSeries(Series):
     @override
     def match_marker(self):
         return _match_marker
+
+    @override
+    def layout_options(self):
+        """Drop the Princeton shield logo (and stylized title banner) DETR reads
+        as a Picture in the running header of every page.
+
+        Both sit in the top ~9% of the page (logo center ~0.076, title banner
+        ~0.086 of page height); the first real content -- the problem-1 marker --
+        is at ~0.17, and a statement figure is always lower still. A 0.12 cutoff
+        clears the header furniture without reaching any real figure. Without
+        this, the logo binds to problem 1, because the title text above it is a
+        left-margin "start" that defeats the drop-above-first-problem guard (see
+        pipeline._assign_pictures)."""
+        return config.LayoutOptions(header_picture_frac=0.12)
 
     @override
     def solution_source(self, test):
