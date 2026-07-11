@@ -169,6 +169,13 @@ class LayoutOptions:
     # Useful for series with a decorative logo/back-cover graphic after the
     # last worked solution; 0 keeps every detected solution figure.
     drop_trailing_solution_figures: int = 0
+    # Place each statement figure crop inline in the problem text (an
+    # ![](problem_<n>_image_<k>.png) ref at the position nanonets emitted its
+    # <img> tag), mirroring the solution-figure inlining. Off by default:
+    # statement figures otherwise stay out-of-band, referenced only by filename.
+    # A series opts in when its problems interleave prose and figures and the
+    # reading order matters (e.g. MPfG). See pipeline.inline_problem_figures.
+    inline_figures: bool = False
 
 
 # --- Detection ---

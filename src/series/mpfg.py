@@ -12,6 +12,7 @@ is one test, id ``<year>_<division>``.
 import re
 from pathlib import Path
 
+from .. import config
 from .base import Series, Test
 
 
@@ -30,6 +31,12 @@ class MpfgSeries(Series):
             test_id = f"{pdf.parent.parent.name}_{pdf.parent.name}"
             tests.append(Test(id=test_id, source=pdf))
         return tests
+
+    def layout_options(self):
+        """Inline statement figures: MPfG problems interleave prose and figures,
+        so a figure's position in the text carries meaning (see
+        pipeline.inline_problem_figures)."""
+        return config.LayoutOptions(inline_figures=True)
 
     def skip_page(self, text: str) -> bool:
         """Drop the directions/title page that precedes the problems.

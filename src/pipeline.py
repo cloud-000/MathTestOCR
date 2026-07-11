@@ -317,7 +317,15 @@ def process_image_nanonets(
         if number is None:  # page header (title/banner before problem 1)
             continue
         if it["kind"] != "text":
-            continue  # <img> descriptions are unreliable; figures come from DETR
+            # <img> descriptions are unreliable and the crop comes from DETR, but
+            # when the series inlines figures we keep the tag's reading-order
+            # position as a sentinel for inline_problem_figures to fill later.
+            if layout.inline_figures:
+                prob = problem_for(number)
+                prob.elements.append(
+                    ProblemElement("text", "Figure", [], text=nanonets_mod.FIGURE_PLACEHOLDER)
+                )
+            continue
         prob = problem_for(number)
         lines = [ln for ln in it["text"].splitlines() if not grouping.is_footer_text(ln)]
         text = "\n".join(lines).strip()
@@ -726,6 +734,34 @@ def _tidy(text):
     import re
 
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def inline_problem_figures(problems, path_prefix=""):
+    """Place each statement figure crop inline in its problem text, in place.
+
+    The statement counterpart to `inline_solution_figures`. Joins the two halves
+    of the "where does this figure go" signal: the DETR crops (the image elements
+    on each `Problem`, in vertical order, which `write_problems` saves as
+    ``problem_<n>_image_<k>.png``) and the reading-order `FIGURE_PLACEHOLDER`
+    sentinels `process_image_nanonets` left in the text when the series set
+    `LayoutOptions.inline_figures`. Each `Problem`'s text elements are collapsed
+    into one whose text carries a ``![](<path_prefix>problem_<n>_image_<k>.png)``
+    ref at each figure's position; the image elements are kept unchanged and in
+    order so the saved crop names still line up. Count mismatches degrade exactly
+    as on the solution side (`_place_figure_refs`): no crop is dropped, no ref
+    dangles. Returns `problems` (mutated in place) for convenience.
+    """
+    for prob in problems:
+        images = [el for el in prob.elements if el.kind == "image" and el.crop is not None]
+        refs = [
+            f"![]({path_prefix}problem_{prob.number}_image_{k}.png)"
+            for k in range(1, len(images) + 1)
+        ]
+        statement = _place_figure_refs(prob.text, refs)
+        prob.elements = (
+            [ProblemElement("text", "Text", [], text=statement)] if statement else []
+        ) + images
+    return problems
 
 
 def inline_solution_figures(solutions, figures, path_prefix=""):

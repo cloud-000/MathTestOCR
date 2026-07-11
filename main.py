@@ -28,6 +28,7 @@ from src.ocr import OCRModel
 from src.ocr_cache import PARSE_CACHE, SOLUTION_CACHE, OCRCache
 from src.pdf_io import pdf_to_images
 from src.pipeline import (
+    inline_problem_figures,
     inline_solution_figures,
     ocr_pages,
     process_image,
@@ -133,6 +134,8 @@ def _cmd_parse_batch(args):
             problems = _parse_one_test(
                 series, test, args.engine, model, args.threshold, cache=cache
             )
+            if series.layout_options().inline_figures:
+                inline_problem_figures(problems, f"{series.name}/{test.id}/")
             n = output.write_problems(problems, dest)
             print(f"[{series.name}] wrote {n} problem(s) -> {dest}")
     finally:
