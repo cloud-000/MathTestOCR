@@ -1,5 +1,6 @@
 """Series registry: maps a series name to its `Series` instance."""
 
+from .hmmt import HmmtSeries
 from .mandelbrot import MandelbrotSeries
 from .mathcounts import MathcountsSeries
 from .mpfg import MpfgSeries
@@ -9,7 +10,15 @@ from .usamts import UsamtsSeries
 
 SERIES = {
     s.name: s
-    for s in (UsamtsSeries(), PurpleCometSeries(), MandelbrotSeries(), MathcountsSeries(), MpfgSeries(), PumacSeries())
+    for s in (
+        UsamtsSeries(),
+        PurpleCometSeries(),
+        MandelbrotSeries(),
+        MathcountsSeries(),
+        MpfgSeries(),
+        PumacSeries(),
+        HmmtSeries(),
+    )
 }
 
 

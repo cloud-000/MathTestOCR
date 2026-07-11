@@ -88,7 +88,7 @@ NANONETS_MAX_TOKENS = 16384
 # same answer-box HTML once per problem, hundreds of chars apart.
 NANONETS_REPEAT_WINDOW = 1200
 NANONETS_REPEAT_PROBE = 48
-NANONETS_REPEAT_COUNT = 4
+NANONETS_REPEAT_COUNT = 5
 NANONETS_REPEAT_MAX_GAP = NANONETS_REPEAT_PROBE * 6
 # The filler-only exemption in _is_runaway still catches a runaway made entirely
 # of filler (e.g. "- - - - -" or "____..."): a real rule/leader/answer-blank
@@ -263,6 +263,7 @@ SERIES_DATA_DIRS = {
     "mathcounts": _MATHTESTS_ROOT / "Mathcounts" / "out",
     "mpfg": _MATHTESTS_ROOT / "MPfG" / "out",
     "pumac": _MATHTESTS_ROOT / "PUMaC" / "out",
+    "hmmt": _MATHTESTS_ROOT / "HMMT" / "out",
 }
 
 # A Mathcounts <year>/<level> folder mixes problem rounds with answer/solution
