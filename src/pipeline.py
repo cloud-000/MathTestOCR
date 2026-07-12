@@ -237,13 +237,16 @@ def _gap_based_starts(detections, image, n):
     return starts
 
 
-def _assign_pictures(detections, image, problem_seq, layout, items=None):
+def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=None):
     """Map each non-blank DETR Picture to a problem number by vertical position.
 
     `problem_seq` is the ordered list of problem numbers (top-to-bottom). Each
     picture is assigned to the problem whose start is the lowest one at or above
-    the picture's vertical centre; pictures above the first problem (page logos)
-    are dropped. Returns {problem_number: [picture_det, ...]}.
+    the picture's vertical centre. A picture above this page's first problem
+    belongs to `carry` (the problem continued from the previous page) when one is
+    given -- its figure spilled onto this page; with no carry (the first page) it
+    is page furniture (header/logo) and is dropped. Returns {problem_number:
+    [picture_det, ...]}.
 
     `layout` is the series' LayoutOptions: it controls the page-spanning Picture
     filter (`max_picture_area_frac`) and whether the gap-based problem-start
@@ -258,8 +261,14 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None):
     pics = _sorted_pictures(
         detections, image, layout.max_picture_area_frac, layout.header_picture_frac
     )
-    if not pics or not problem_seq:
+    if not pics:
         return {}
+    if not problem_seq:
+        # No problem starts on this page: it only continues the previous page's
+        # problem (a figure that spilled over, no new statement), so every crop
+        # belongs to that carried-in problem. Without a carry there is nothing to
+        # attach them to.
+        return {carry: list(pics)} if carry is not None else {}
     starts = _problem_start_ys(detections, image, layout.problem_start_from_headers)
     # Geometry is the primary signal, but only trustworthy when DETR found exactly
     # one start per problem: a figure's vertical position then pins it to the
@@ -313,7 +322,11 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None):
     for pic in pics:
         yc = (pic["box"][1] + pic["box"][3]) / 2
         if yc + config.Y_TOL < starts[0]:
-            continue  # vertically above the first problem -> page header / logo
+            # Above this page's first problem: a figure carried over from the
+            # previous page's problem, or (no carry) a page header / logo to drop.
+            if carry is not None:
+                groups.setdefault(carry, []).append(pic)
+            continue
         idx = 0
         for i, sy in enumerate(starts):
             if sy <= yc + config.Y_TOL:
@@ -378,20 +391,25 @@ def process_image_nanonets(
     match_marker=None,
     cache=None,
     layout=None,
+    carry=None,
 ):
     """Whole-page OCR via the nanonets engine; DETR supplies the image crops.
 
     Nanonets does all text transcription and problem segmentation. Figures are
-    mapped to problems geometrically from DETR (see _assign_pictures) -- Nanonets'
-    inline <img> tags are ignored, since the model both invents them on text-only
-    problems and omits them on real figures. Returns (problems, detections,
-    groups); `groups` maps each problem to its Picture detections (debug overlay).
+    mapped to problems geometrically from DETR (see _assign_pictures); Nanonets'
+    inline <img> tags are used only as a fallback when the geometry is ambiguous,
+    since the model both invents them on text-only problems and omits them on real
+    figures. Returns (problems, detections, groups); `groups` maps each problem to
+    its Picture detections (debug overlay).
 
     `match_marker` is an optional series-specific marker matcher for
     competition-specific numbering quirks. `cache` is an optional OCRCache: when
     given, the (slow) whole-page OCR is served from / written to it, while DETR
     detection still runs every time. `layout` is the series' LayoutOptions (its
-    table/figure heuristic knobs); None uses the conservative defaults.
+    table/figure heuristic knobs); None uses the conservative defaults. `carry` is
+    the problem in progress at the top of this page (from the previous page of a
+    multi-page test): it binds this page's leading text and any figure above the
+    first problem to that problem instead of dropping them (see process_test).
     """
     layout = layout or config.LayoutOptions()
     print("[nanonets] Starting pipeline...")
@@ -410,7 +428,10 @@ def process_image_nanonets(
     )
     print("[nanonets] Nanonets OCR done.")
     items = nanonets_mod.parse_layout(
-        markdown, match_marker, split_marker_table_rows=layout.split_marker_table_rows
+        markdown,
+        match_marker,
+        split_marker_table_rows=layout.split_marker_table_rows,
+        start_problem=carry,
     )
 
     print("[nanonets] Assembling problems...")
@@ -443,8 +464,14 @@ def process_image_nanonets(
         if text:
             prob.elements.append(ProblemElement("text", "Text", [], text=text))
 
-    # Geometric figure assignment from DETR.
-    groups = _assign_pictures(detections, image, problem_seq, layout, items)
+    # Geometric figure assignment from DETR. The carry problem continues from the
+    # previous page, so it has no problem-start on this page to align against (a
+    # marker equal to carry can't occur under the increasing guard, so it only
+    # enters problem_seq via seeded continuation text) -- exclude it so the
+    # remaining, page-starting problems line up 1:1 with DETR's starts. A figure
+    # above the first start still goes to carry (handled inside _assign_pictures).
+    geom_seq = [n for n in problem_seq if n != carry]
+    groups = _assign_pictures(detections, image, geom_seq, layout, items, carry)
     for number in sorted(groups):
         prob = problem_for(number)
         for pic in groups[number]:
@@ -462,21 +489,30 @@ def process_test(page_paths, engine, model, threshold=None, match=None, cache=No
 
     A test (e.g. a USAMTS PDF rendered to page PNGs) may span several pages, with
     a single problem's statement and figures split across them. Each page is run
-    through the chosen engine independently, then problems sharing a number are
-    merged (their elements concatenated in page order). `engine` is "nanonets" or
-    "mlx"; `model` is the matching NanonetsClient / OCRModel. `match` is the
-    series-specific marker matcher. `cache` is an optional OCRCache for the
-    nanonets whole-page OCR (ignored by the mlx engine, which OCRs per crop).
-    `layout` is the series' LayoutOptions (nanonets only). Returns the merged
-    [Problem], number-sorted.
+    through the chosen engine, then problems sharing a number are merged (their
+    elements concatenated in page order). `engine` is "nanonets" or "mlx"; `model`
+    is the matching NanonetsClient / OCRModel. `match` is the series-specific
+    marker matcher. `cache` is an optional OCRCache for the nanonets whole-page OCR
+    (ignored by the mlx engine, which OCRs per crop). `layout` is the series'
+    LayoutOptions (nanonets only). Returns the merged [Problem], number-sorted.
+
+    For the nanonets engine the highest problem number seen so far is carried into
+    the next page (`carry`) so that page's leading text and any figure sitting
+    above its first problem attach to the problem continued from the previous page
+    instead of being dropped (see process_image_nanonets / _assign_pictures).
     """
     merged = {}  # number -> Problem
+    carry = None  # nanonets: problem in progress at the top of the next page
     for path in page_paths:
         if engine == "nanonets":
             thr = threshold if threshold is not None else config.NANONETS_DETECT_THRESHOLD
             problems, _, _ = process_image_nanonets(
-                path, model, thr, match_marker=match, cache=cache, layout=layout
+                path, model, thr, match_marker=match, cache=cache, layout=layout, carry=carry
             )
+            page_numbers = [p.number for p in problems]
+            if page_numbers:
+                page_max = max(page_numbers)
+                carry = page_max if carry is None else max(carry, page_max)
         else:
             thr = threshold if threshold is not None else config.DETECT_THRESHOLD
             problems, _, _ = process_image(path, model, thr, match=match)
