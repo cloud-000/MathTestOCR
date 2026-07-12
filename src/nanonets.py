@@ -60,6 +60,16 @@ _FURNITURE_RE = re.compile(
 )
 _POINTS_ONLY_RE = re.compile(r"^\(\s*\d+\s*\)$")  # "(1)" point-value cells
 _BLANK_RUN_RE = re.compile(r"_{2,}")  # answer blanks: "________"
+# The unit that labels an answer blank, once the blank rule itself is gone:
+# a leading run of currency signs / short lowercase-or-number tokens up to
+# where the real statement starts (a capital letter, an opening paren, or the
+# end of the fragment). Catches "$", "cm$^2$", "units$^2$", "units 2", "base 8".
+# The capital/paren guard keeps it from eating into a real statement, which in
+# these tests always begins with a capitalized word.
+_ANSWER_UNIT_RE = re.compile(
+    r"^(?:\$|[a-z][\w°²³.^${}/-]*|\d+)(?:\s+(?:\$|[a-z][\w°²³.^${}/-]*|\d+))*"
+    r"\s*(?=[A-Z(]|$)"
+)
 
 # Chars that legitimately repeat in layout (answer blanks, dotted leaders, rules).
 # A tail made only of these is filler, not a generation loop.
@@ -361,6 +371,19 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
                 current = last = match[0]
                 # Drop the marker and any emphasis closer it left behind ("**").
                 line = probe[match[1] :].lstrip("*_ ")
+            elif (
+                match is not None
+                and last is not None
+                and match[0] <= last
+                and not _clean_text_line(probe[match[1] :].lstrip("*_ "))
+            ):
+                # A marker repeating an already-seen number with nothing but a
+                # blank rule after it ("60. ____") is the problem's printed
+                # answer line, not a statement -- older MATHCOUNTS rounds print
+                # one under every problem. It is not a new marker (the number
+                # doesn't increase), so drop the whole line instead of letting
+                # the bare "60." dangle onto the end of the statement.
+                continue
             line = _clean_text_line(line)
             if not line or _POINTS_ONLY_RE.match(line):
                 continue
@@ -404,8 +427,35 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
             if m is not None and (last is None or m[0] > last):
                 flush()
                 current = last = m[0]
-                statement = " ".join(_TAG_RE.sub(" ", c) for c in cells[1:])
-                statement = _clean_text_line(re.sub(r"\s+", " ", statement))
+                # The statement and the answer blank each live in their own
+                # cell, but which column holds which varies by year: some print
+                # "N. ____ unit | <statement>", older rounds print the reverse,
+                # "<statement> | N. ____". So strip a leading marker from *every*
+                # cell (not just the first) and keep whatever text survives. A
+                # cell holding the answer blank is recognized by the blank rule
+                # it contains; the blank *and the unit that labels it* ("cm$^2$",
+                # a lone "$") are dropped, so only a real statement survives --
+                # whichever side it was on.
+                parts = []
+                for c in cells:
+                    cell = re.sub(r"\s+", " ", _TAG_RE.sub(" ", c)).strip()
+                    # Note the blank rule *before* stripping the marker: doing so
+                    # lstrips the underscores away too, so this is the last point
+                    # the answer-blank cell can be told apart from a statement.
+                    is_answer = bool(_BLANK_RUN_RE.search(cell))
+                    probe_cell = cell.lstrip("*_# ")
+                    cm = match_marker(probe_cell)
+                    if cm is not None:
+                        cell = probe_cell[cm[1] :].lstrip("*_ ")
+                    if is_answer:
+                        # Drop the unit that labeled the blank ("cm$^2$", a lone
+                        # "$"). Anything after it is a statement sharing the cell
+                        # (rare) and is kept.
+                        cell = _ANSWER_UNIT_RE.sub("", _clean_text_line(cell), count=1)
+                    cell = _clean_text_line(cell)
+                    if cell:
+                        parts.append(cell)
+                statement = " ".join(parts).strip()
                 if statement:
                     buf.append(statement)
                 continue
