@@ -10,6 +10,9 @@ Examples:
     python main.py parse --series usamts --data-dir /path/to/usamts --force
     python main.py parse --series mathcounts --test 2025_state_sprint
 
+    # Unregistered competition: one PDF/image folder, or a directory of PDFs
+    python main.py parse-series custom-name /path/to/source --out out
+
     # Scrape solutions alongside the parsed problems
     python main.py solutions --series usamts --data-dir /path/to/usamts
 
@@ -38,7 +41,7 @@ from src.pipeline import (
     process_solution_document,
     process_test,
 )
-from src.series import Test, get_series, series_names
+from src.series import GenericSeries, Test, get_series, series_names
 
 
 def _print_problems(problems):
@@ -128,12 +131,18 @@ def _parse_one_test(series, test, engine, model, threshold, cache=None, layout=N
 def _cmd_parse_batch(args):
     series = get_series(args.series)
     data_dir = _resolve_data_dir(series, args.data_dir)
-    out_root = Path(args.out) / series.name
-
     tests = series.discover_tests(data_dir)
     print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
     tests = _select_tests(series, tests, args.test)
-    tests = _filter_existing(series, tests, out_root, args.existing)
+    _run_parse_batch(series, tests, args)
+
+
+def _run_parse_batch(series, tests, args):
+    """Parse an already-discovered set of tests with shared batch behavior."""
+    out_root = Path(args.out) / series.name
+    tests = _filter_existing(
+        series, tests, out_root, getattr(args, "existing", False)
+    )
     if not tests:
         return
 
@@ -160,6 +169,17 @@ def _cmd_parse_batch(args):
             print(f"[{series.name}] wrote {n} problem(s) -> {dest}")
     finally:
         _close_engine(args.engine, model)
+
+
+def cmd_parse_series(args):
+    """Parse an unregistered series from a PDF, image folder, or PDF directory."""
+    try:
+        series = GenericSeries(args.name)
+        tests = series.discover_source(args.source, args.test_name)
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"[{series.name}] discovered {len(tests)} test(s) in {args.source}")
+    _run_parse_batch(series, tests, args)
 
 
 def _cmd_parse_single(args):
@@ -510,6 +530,22 @@ def main():
     p_parse.add_argument("--debug", action="store_true", help="save annotated overlay (single image)")
     _add_engine_args(p_parse)
     p_parse.set_defaults(func=cmd_parse)
+
+    p_generic = sub.add_parser(
+        "parse-series", help="parse an unregistered series from a PDF or directory"
+    )
+    p_generic.add_argument("name", help="custom series name used in the output path")
+    p_generic.add_argument(
+        "source", help="PDF, page-image folder, or directory of PDFs"
+    )
+    p_generic.add_argument(
+        "--test-name", help="override the inferred test name for a single-test source"
+    )
+    p_generic.add_argument(
+        "--force", action="store_true", help="re-parse tests even if already present"
+    )
+    _add_engine_args(p_generic)
+    p_generic.set_defaults(func=cmd_parse_series)
 
     p_sol = sub.add_parser("solutions", help="scrape per-problem solutions for a series")
     p_sol.add_argument("--series", required=True, choices=series_names())

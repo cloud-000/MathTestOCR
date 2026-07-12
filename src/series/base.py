@@ -14,6 +14,7 @@ from .. import config, pdf_io
 
 # Page-image extensions recognized when a test is a folder of pages rather than a PDF.
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 # --- Answer-key line parsing (shared by series answer parsers) ---
 # One "N." / "N)" entry inside an answer-key line. Several entries often share a
@@ -244,3 +245,51 @@ class Series:
         Called only when `answer_source` returned a document. Default: {}.
         """
         return {}
+
+
+def _safe_name(value: str, label: str) -> str:
+    """Validate a name that will become one output-path component."""
+    if not _SAFE_NAME_RE.fullmatch(value) or value in {".", ".."}:
+        raise ValueError(
+            f"invalid {label} {value!r}; use letters, numbers, '.', '_', or '-' "
+            "and start with a letter or number"
+        )
+    return value
+
+
+class GenericSeries(Series):
+    """Runtime-configured series using the conservative base behavior."""
+
+    def __init__(self, name: str):
+        self.name = _safe_name(name, "series name")
+
+    def discover_source(self, source, test_name=None):
+        """Discover one PDF/image-folder test or a directory batch of PDFs."""
+        src = Path(source)
+        if not src.exists():
+            raise FileNotFoundError(f"source not found: {src}")
+
+        if src.is_file():
+            if src.suffix.lower() != ".pdf":
+                raise ValueError(f"unsupported source file (expected PDF): {src}")
+            name = _safe_name(test_name or src.stem, "test name")
+            return [Test(id=name, source=src)]
+
+        pdfs = sorted(
+            p
+            for p in src.iterdir()
+            if p.is_file() and p.suffix.lower() == ".pdf"
+        )
+        images = _natural_pages(src)
+        if pdfs and images:
+            raise ValueError(
+                f"mixed PDF and page-image directory is ambiguous: {src}"
+            )
+        if images:
+            name = _safe_name(test_name or src.name, "test name")
+            return [Test(id=name, source=src)]
+        if pdfs:
+            if test_name is not None:
+                raise ValueError("--test-name cannot be used with a batch directory")
+            return [Test(id=_safe_name(p.stem, "test name"), source=p) for p in pdfs]
+        raise ValueError(f"no top-level PDFs or page images found in: {src}")
