@@ -167,6 +167,13 @@ def _problem_start_ys(detections, image, headers_only=False):
     below it is a separate left-margin box and would otherwise be counted as a
     second start (see LayoutOptions.problem_start_from_headers). Falls back to the
     full text-box scan if the page has no left-margin heading.
+
+    In the default (body-text) mode the page title / section headers
+    (config.HEADER_LABELS) are dropped first: they are furniture, not problem
+    starts, and a title that begins slightly left of the body column would
+    otherwise define `left` and push every real problem out of `x_tol` (yielding
+    a single bogus start), while a section header between problems would add a
+    spurious one.
     """
     labels = config.HEADER_LABELS if headers_only else config.TEXT_LABELS
     cand = [
@@ -174,6 +181,9 @@ def _problem_start_ys(detections, image, headers_only=False):
         for d in detections
         if d["label"] in labels and not grouping.is_blank_crop(image, d["box"])
     ]
+    if not headers_only:
+        body = [d for d in cand if d["label"] not in config.HEADER_LABELS]
+        cand = body or cand
     if not cand and headers_only:
         return _problem_start_ys(detections, image)
     if not cand:
@@ -227,7 +237,7 @@ def _gap_based_starts(detections, image, n):
     return starts
 
 
-def _assign_pictures(detections, image, problem_seq, layout):
+def _assign_pictures(detections, image, problem_seq, layout, items=None):
     """Map each non-blank DETR Picture to a problem number by vertical position.
 
     `problem_seq` is the ordered list of problem numbers (top-to-bottom). Each
@@ -238,6 +248,12 @@ def _assign_pictures(detections, image, problem_seq, layout):
     `layout` is the series' LayoutOptions: it controls the page-spanning Picture
     filter (`max_picture_area_frac`) and whether the gap-based problem-start
     fallback is used when DETR's left-margin count disagrees with nanonets'.
+
+    `items` is the page's parse_layout output. When DETR's problem-start count
+    disagrees with nanonets' problem count (so the geometry is untrustworthy),
+    the problem-tagged inline <img> positions are used as a fallback -- but only
+    when their count matches DETR's pictures and none is appended past the last
+    problem's text (see below).
     """
     pics = _sorted_pictures(
         detections, image, layout.max_picture_area_frac, layout.header_picture_frac
@@ -245,13 +261,50 @@ def _assign_pictures(detections, image, problem_seq, layout):
     if not pics or not problem_seq:
         return {}
     starts = _problem_start_ys(detections, image, layout.problem_start_from_headers)
+    # Geometry is the primary signal, but only trustworthy when DETR found exactly
+    # one start per problem: a figure's vertical position then pins it to the
+    # problem whose text sits directly above. When the counts disagree the starts
+    # have drifted (a statement split into several left-margin boxes, or a missed
+    # one), so before falling back to fuzzy geometry try nanonets' inline <img>
+    # tags (zip pics top-to-bottom to the tags in reading order). This runs only
+    # on a start/problem mismatch -- when the starts agree geometry is preferred,
+    # because nanonets' tag order is the less reliable of the two.
+    if len(starts) != len(problem_seq):
+        # Trust the tags only when their problem-tagged count matches DETR's
+        # pictures *and* none is "appended" past its problem: nanonets sometimes
+        # dumps a figure's <img> at the very bottom of the page (after the last
+        # problem) instead of beside it, mis-tagging it -- e.g. an octagon diagram
+        # belonging to problem 4 emitted after problem 5. The tell is that no
+        # later, higher-numbered problem's text follows the tag (trailing footer
+        # text inherits the last problem's number, so a plain position check is
+        # not enough); when that happens we distrust the tags and keep geometry.
+        indexed = list(enumerate(items or []))
+        img_tags = [
+            (i, it["problem"])
+            for i, it in indexed
+            if it["kind"] == "image" and it["problem"] is not None
+        ]
+
+        def _appended(idx, prob):
+            return not any(
+                it["kind"] == "text" and it["problem"] is not None and it["problem"] > prob
+                for j, it in indexed
+                if j > idx
+            )
+
+        appended = any(_appended(i, p) for i, p in img_tags)
+        if img_tags and len(img_tags) == len(pics) and not appended:
+            groups = {}
+            for pic, (_, number) in zip(pics, img_tags):
+                groups.setdefault(number, []).append(pic)
+            return groups
+        if layout.gap_based_picture_fallback:
+            starts = _gap_based_starts(detections, image, len(problem_seq)) or starts
     groups = {}
     if not starts:
         # No usable text geometry: keep every figure, on the first problem.
         groups[problem_seq[0]] = list(pics)
         return groups
-    if len(starts) != len(problem_seq) and layout.gap_based_picture_fallback:
-        starts = _gap_based_starts(detections, image, len(problem_seq)) or starts
     if len(starts) != len(problem_seq):
         print(
             f"[nanonets] problem-count mismatch: {len(problem_seq)} problem(s) from "
@@ -391,7 +444,7 @@ def process_image_nanonets(
             prob.elements.append(ProblemElement("text", "Text", [], text=text))
 
     # Geometric figure assignment from DETR.
-    groups = _assign_pictures(detections, image, problem_seq, layout)
+    groups = _assign_pictures(detections, image, problem_seq, layout, items)
     for number in sorted(groups):
         prob = problem_for(number)
         for pic in groups[number]:
