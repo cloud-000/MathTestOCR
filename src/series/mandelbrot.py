@@ -165,6 +165,12 @@ class MandelbrotSeries(Series):
         them the right-edge and bottom-band tests fence off the answer/scoring
         furniture without touching the statement-column figures, which DETR
         scores low but which the counts confirm are real diagrams.
+        ``point_marker_row_anchor`` reuses the vertical positions of those
+        discarded point-value circles as a fallback row anchor when DETR's
+        left-margin text boxes do not yield exactly one start per problem. The
+        circle outlines are read from the page image, not trusted to DETR (which
+        misses some at even the low figure threshold), and are accepted only
+        when exactly one marker is found for every OCR-parsed problem.
         The last false positives the low threshold surfaces are the problems'
         own math typeset as figures. ``min_picture_height_frac`` drops the short
         ones -- inline equation strips and lone symbols, well under any real 2D
@@ -181,6 +187,7 @@ class MandelbrotSeries(Series):
             max_picture_area_frac=0.15,
             header_picture_frac=0.20,
             right_margin_picture_frac=0.20,
+            point_marker_row_anchor=True,
             footer_picture_frac=0.14,
             min_picture_height_frac=0.036,
             equation_text_overlap=0.3,

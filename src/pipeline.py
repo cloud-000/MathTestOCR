@@ -283,6 +283,92 @@ def _gap_based_starts(detections, image, n):
     return starts
 
 
+def _point_marker_row_starts(image, right_margin_frac, header_frac, footer_frac, n):
+    """Return problem-row boundaries from point markers in the right gutter.
+
+    Some fixed-table layouts print one circled point value (or ballot box) at
+    the vertical centre of every problem row. Their dark, roughly-square
+    outlines are more stable than DETR's left-margin text segmentation. Find
+    those outlines directly in the gutter, then put each boundary halfway
+    between adjacent marker centres so a figure anywhere within a row maps to
+    that row rather than requiring its centre to sit below the point marker.
+
+    This is deliberately fail-closed: unless exactly ``n`` plausible markers
+    survive the series' header/footer bands, return no fallback at all.
+    """
+    if right_margin_frac is None or n <= 0:
+        return []
+    width, height = image.size
+    x0 = round((1 - right_margin_frac) * width)
+    y0 = round((header_frac or 0) * height)
+    y1 = round((1 - (footer_frac or 0)) * height)
+    if x0 >= width or y0 >= y1:
+        return []
+
+    # Threshold once through Pillow's lookup-table path, then scan row bytes.
+    # The printed outlines are near-black; 200 retains antialiasing while the
+    # white/off-white paper stays empty.
+    ink = image.convert("L").crop((x0, y0, width, y1)).point(
+        lambda px: 255 if px < config.POINT_MARKER_INK_THRESHOLD else 0
+    )
+    gutter_w, gutter_h = ink.size
+    data = ink.tobytes()
+    # The problem table's right border runs through this same gutter. It cleanly
+    # separates the row rectangles (left) from the point markers (right), so
+    # restrict the scan to the marker side. Merely erasing the border is not
+    # enough: on short rows a horizontal rule can sit within a few pixels of a
+    # circle and merge their y-runs despite the two shapes never touching.
+    border_cols = []
+    for x in range(gutter_w):
+        ink_count = sum(bool(data[y * gutter_w + x]) for y in range(gutter_h))
+        if ink_count > config.POINT_MARKER_VERTICAL_LINE_FRAC * gutter_h:
+            border_cols.append(x)
+    if border_cols and max(border_cols) + 1 < gutter_w:
+        ink = ink.crop((max(border_cols) + 1, 0, gutter_w, gutter_h))
+        gutter_w, gutter_h = ink.size
+    data = ink.tobytes()
+    active = [
+        any(data[y * gutter_w : (y + 1) * gutter_w])
+        for y in range(gutter_h)
+    ]
+
+    # Merge tiny antialiasing gaps within an outline, but not separate rows.
+    bands = []
+    start = previous = None
+    for y, has_ink in enumerate(active):
+        if not has_ink:
+            continue
+        if start is None:
+            start = previous = y
+        elif y - previous <= config.POINT_MARKER_ROW_GAP:
+            previous = y
+        else:
+            bands.append((start, previous + 1))
+            start = previous = y
+    if start is not None:
+        bands.append((start, previous + 1))
+
+    min_h = config.POINT_MARKER_HEIGHT_FRAC[0] * height
+    max_h = config.POINT_MARKER_HEIGHT_FRAC[1] * height
+    min_aspect, max_aspect = config.POINT_MARKER_ASPECT
+    centers = []
+    for top, bottom in bands:
+        bbox = ink.crop((0, top, gutter_w, bottom)).getbbox()
+        if bbox is None:
+            continue
+        marker_w = bbox[2] - bbox[0]
+        marker_h = bbox[3] - bbox[1]
+        if min_h <= marker_h <= max_h and min_aspect <= marker_w / marker_h <= max_aspect:
+            centers.append(y0 + top + (bbox[1] + bbox[3]) / 2)
+    if len(centers) != n:
+        return []
+    if n == 1:
+        return [centers[0]]
+    starts = [centers[0] - (centers[1] - centers[0]) / 2]
+    starts.extend((a + b) / 2 for a, b in zip(centers, centers[1:]))
+    return starts
+
+
 def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=None,
                      equation_text_boxes=None):
     """Map each non-blank DETR Picture to a problem number by vertical position.
@@ -362,7 +448,16 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
             for pic, (_, number) in zip(pics, img_tags):
                 groups.setdefault(number, []).append(pic)
             return groups
-        if layout.gap_based_picture_fallback:
+        if layout.point_marker_row_anchor:
+            marker_starts = _point_marker_row_starts(
+                image,
+                layout.right_margin_picture_frac,
+                layout.header_picture_frac,
+                layout.footer_picture_frac,
+                len(problem_seq),
+            )
+            starts = marker_starts or starts
+        if len(starts) != len(problem_seq) and layout.gap_based_picture_fallback:
             starts = _gap_based_starts(detections, image, len(problem_seq)) or starts
     groups = {}
     if not starts:

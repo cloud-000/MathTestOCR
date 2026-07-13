@@ -169,6 +169,17 @@ EQUATION_PICTURE_MIN_ASPECT = 2.5
 # below the main text-detection threshold.
 EQUATION_TEXT_MIN_SCORE = 0.4
 
+# --- Point-marker row anchors (opt-in LayoutOptions fallback) ---
+# Mandelbrot's point-value circles / ballot boxes are near-black, roughly
+# square, and about 2.7% of the page height at every source resolution. The
+# gutter also contains the problem table's continuous right border; discard any
+# ink column spanning this much of the inspected band before finding markers.
+POINT_MARKER_INK_THRESHOLD = 200
+POINT_MARKER_VERTICAL_LINE_FRAC = 0.5
+POINT_MARKER_ROW_GAP = 3
+POINT_MARKER_HEIGHT_FRAC = (0.018, 0.04)
+POINT_MARKER_ASPECT = (0.6, 1.4)
+
 # --- Solution-figure assignment (pipeline.process_solution_document) ---
 # Tier 0 reads problem-marker positions from the solution PDF's embedded text
 # layer. A text block only counts as a problem start when at least this much
@@ -253,6 +264,13 @@ class LayoutOptions:
     # same threshold as text. Pair with the area/header/footer filters, which the
     # extra low-confidence boxes lean on to stay clean.
     picture_detect_threshold: float | None = None
+    # When DETR's left-margin problem starts disagree with the OCR problem
+    # count, recover row bands from the small, roughly-square point-value
+    # markers printed in the right gutter. The marker outlines are read directly
+    # from the page image; their crops remain excluded by
+    # right_margin_picture_frac. Off by default: this layout convention is
+    # series-specific (Mandelbrot's circled digits / ballot boxes).
+    point_marker_row_anchor: bool = False
     # When DETR's left-margin problem-start count disagrees with nanonets'
     # problem count, fall back to splitting page content at the largest vertical
     # gaps (see pipeline._gap_based_starts). Off by default: on pages with
