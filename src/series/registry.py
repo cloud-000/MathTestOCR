@@ -1,11 +1,13 @@
 """Series registry: maps a series name to its `Series` instance."""
 
+from .bmt import BmtSeries
 from .hmmt import HmmtSeries
 from .mandelbrot import MandelbrotSeries
 from .mathcounts import MathcountsSeries
 from .mpfg import MpfgSeries
 from .pumac import PumacSeries
 from .purplecomet import PurpleCometSeries
+from .smt import SmtSeries
 from .usamts import UsamtsSeries
 
 SERIES = {
@@ -18,6 +20,8 @@ SERIES = {
         MpfgSeries(),
         PumacSeries(),
         HmmtSeries(),
+        SmtSeries(),
+        BmtSeries(),
     )
 }
 

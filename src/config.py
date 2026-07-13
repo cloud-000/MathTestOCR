@@ -298,6 +298,8 @@ SERIES_DATA_DIRS = {
     "mpfg": _MATHTESTS_ROOT / "MPfG" / "out",
     "pumac": _MATHTESTS_ROOT / "PUMaC" / "out",
     "hmmt": _MATHTESTS_ROOT / "HMMT" / "out",
+    "smt": _MATHTESTS_ROOT / "SMT" / "out",
+    "bmt": _MATHTESTS_ROOT / "BMT" / "out",
 }
 
 # A Mathcounts <year>/<level> folder mixes problem rounds with answer/solution
