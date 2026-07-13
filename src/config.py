@@ -96,6 +96,22 @@ NANONETS_REPEAT_MAX_GAP = NANONETS_REPEAT_PROBE * 6
 # trailing filler run at least this long is treated as a loop. Comfortably above
 # any single-row layout element, well below the token cap.
 NANONETS_FILLER_MAX_RUN = 400
+# Long-period runaway guard (see nanonets._tandem_loop). The probe-cluster guard
+# above only catches loops whose period fits within NANONETS_REPEAT_MAX_GAP; a
+# model stuck re-describing a figure emits the *same long paragraph* over and
+# over (period ~300+ chars), which slips past it. This second guard looks for a
+# near-verbatim tandem repeat: a block of NANONETS_LOOP_MIN_PERIOD..MAX_PERIOD
+# chars repeated back-to-back at least NANONETS_LOOP_MIN_REPEATS times, each
+# consecutive pair matching at least NANONETS_LOOP_MATCH of its chars (tolerating
+# the slight drift such loops show). The min-period floor stays above legitimate
+# short repeats (a summation's near-identical terms, per-problem answer-box HTML)
+# that the probe guard already reasons about, and the repeat count keeps a
+# genuinely repetitive-but-bounded layout (a few-row table) from tripping it.
+NANONETS_LOOP_WINDOW = 2400
+NANONETS_LOOP_MIN_PERIOD = 80
+NANONETS_LOOP_MAX_PERIOD = 1600
+NANONETS_LOOP_MIN_REPEATS = 6
+NANONETS_LOOP_MATCH = 0.9
 
 # --- Answer-extraction LLM (deterministic-marker fallback) ---
 # A series' parse_answers keys the answer off a printed marker ("Answer:", a

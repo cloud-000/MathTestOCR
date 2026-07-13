@@ -509,7 +509,11 @@ def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=N
     """
     if cache is not None and cache_key is not None:
         hit = cache.get(cache_key)
-        if hit is not None:
+        # Ignore a cached page that is itself a runaway. An older guard version
+        # may have stored a loop it couldn't yet detect (nanonets._is_runaway has
+        # since learned new loop shapes); serving it would silently drop every
+        # problem below the loop. Re-OCR heals it and re-caches a clean pass.
+        if hit is not None and not nanonets_mod._is_runaway(hit):
             return hit
     temps = [base_temp] + [t for t in config.NANONETS_RETRY_TEMPS if t > base_temp]
     for i, temp in enumerate(temps):

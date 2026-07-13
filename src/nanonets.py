@@ -67,6 +67,12 @@ _POINTS_ONLY_RE = re.compile(
     r"|^[①-⑳❶-❿➀-➉⓪☐-☒■□◻◼]+$"
 )
 _BLANK_RUN_RE = re.compile(r"_{2,}")  # answer blanks: "________"
+# A display-math close (``$$`` or ``\]``) and any trailing spaces. The next
+# problem's marker is sometimes emitted on the same line, right after the prior
+# problem's closing display equation ("...\boxed{5}.$$ **Problem 14** ..."); the
+# line-anchored marker matcher then misses it and swallows the whole next
+# problem. See _split_glued_markers.
+_MATH_CLOSE_RE = re.compile(r"(?:\$\$|\\\])[ \t]*")
 # Ordered-list scaffolding (see parse_layout's ordered_list_markers): a line
 # that *opens* a list item starts the next problem; all list/line-break tags are
 # flattened to spaces so none leak into the statement.
@@ -144,14 +150,97 @@ def _is_runaway(text: str) -> bool:
             break
         positions.append(idx)
         start = idx + 1
-    if len(positions) < config.NANONETS_REPEAT_COUNT:
-        return False
+    if len(positions) >= config.NANONETS_REPEAT_COUNT:
+        recent = positions[-config.NANONETS_REPEAT_COUNT :]
+        if all(
+            b - a <= config.NANONETS_REPEAT_MAX_GAP
+            for a, b in zip(recent, recent[1:])
+        ):
+            return True
 
-    recent = positions[-config.NANONETS_REPEAT_COUNT :]
-    return all(
-        b - a <= config.NANONETS_REPEAT_MAX_GAP
-        for a, b in zip(recent, recent[1:])
-    )
+    # The probe cluster above only spans loops whose period fits in
+    # NANONETS_REPEAT_MAX_GAP. A model stuck re-describing a figure loops on a
+    # far longer unit (a whole paragraph, ~300+ chars) that recurs too few times,
+    # too far apart, to register there. Fall through to a tandem-repeat check.
+    return _tandem_loop(text)
+
+
+def _tandem_loop(text: str) -> bool:
+    """True if the tail is a long block repeated near-verbatim back-to-back.
+
+    Targets the runaway the probe-cluster guard misses: the model re-emitting the
+    same figure-description paragraph dozens of times (period ~300-400 chars).
+    We anchor a probe-sized slice just *before* the tail tip -- these loops drift
+    slightly at the very end, so the last chars are the least reliable -- find
+    its previous occurrence to read off the period, then confirm that several
+    consecutive periods across the window match. The min-period floor and repeat
+    count keep legitimate bounded repetition (a summation's similar terms, a
+    short table) from tripping it; see the config constants for the reasoning.
+    """
+    probe = config.NANONETS_REPEAT_PROBE
+    w = text[-config.NANONETS_LOOP_WINDOW :]
+    n = len(w)
+    if n < config.NANONETS_LOOP_MIN_PERIOD * config.NANONETS_LOOP_MIN_REPEATS:
+        return False
+    anchor_end = n - probe
+    anchor = w[anchor_end - probe : anchor_end]
+    if len(anchor) < probe:
+        return False
+    prev = w.rfind(anchor, 0, anchor_end - 1)
+    if prev == -1:
+        return False
+    period = (anchor_end - probe) - prev
+    if not (
+        config.NANONETS_LOOP_MIN_PERIOD <= period <= config.NANONETS_LOOP_MAX_PERIOD
+    ):
+        return False
+    reps = n // period
+    if reps < config.NANONETS_LOOP_MIN_REPEATS:
+        return False
+    matches = 0
+    for k in range(reps - 1):
+        b1 = w[n - period * (k + 1) : n - period * k]
+        b2 = w[n - period * (k + 2) : n - period * (k + 1)]
+        if len(b1) == period == len(b2):
+            same = sum(1 for x, y in zip(b1, b2) if x == y) / period
+            if same >= config.NANONETS_LOOP_MATCH:
+                matches += 1
+    return matches >= config.NANONETS_LOOP_MIN_REPEATS - 1
+
+
+def _split_glued_markers(text: str, match_marker) -> str:
+    """Break a line before a problem marker glued onto a display-math close.
+
+    Nanonets occasionally emits the next problem's marker on the same line as
+    the previous problem's closing display equation
+    ("...\\boxed{5}.$$ **Problem 14** The three roots..."). `consume_lines`'s
+    matcher only anchors at line start, so such a marker is invisible and the
+    whole following problem is swallowed. We insert a newline before it so the
+    existing per-line logic sees it normally.
+
+    Splitting is gated two ways so it can't misfire:
+
+    * on a *display-math close* (``$$`` or ``\\]``) -- a real new problem never
+      opens mid-sentence, but a display equation routinely ends the problem
+      before it (an in-prose "as shown in Problem 3" is thus never touched);
+    * only on a *worded* marker ("Problem"/"Question"), i.e. one whose text
+      begins with a letter. A ``$$`` is ambiguous (it also *opens* display math),
+      and a bare-number or ``1/3/37.``-style marker right after one is almost
+      always a numeric math literal ("``$$469234692346...4685.$$``"), which the
+      permissive matcher would otherwise read as a spurious problem start. The
+      word "Problem" never appears inside a formula, so a worded marker is safe.
+
+    Whether the freed marker actually starts a new problem (vs. repeats an
+    already-seen number) is still decided by consume_lines -- this only makes it
+    visible.
+    """
+    def repl(m):
+        probe = text[m.end():].lstrip("*_# ")
+        if probe[:1].isalpha() and match_marker(probe) is not None:
+            return m.group(0).rstrip() + "\n"
+        return m.group(0)
+
+    return _MATH_CLOSE_RE.sub(repl, text)
 
 
 def _close_dangling_img(text: str) -> str:
@@ -372,6 +461,7 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
         """
         nonlocal current, last
         text = _TABLE_TAG_RE.sub("\n", chunk)
+        text = _split_glued_markers(text, match_marker)
         for raw in text.splitlines():
             line = raw.strip()
             if not line:
