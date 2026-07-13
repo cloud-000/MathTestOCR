@@ -97,6 +97,40 @@ NANONETS_REPEAT_MAX_GAP = NANONETS_REPEAT_PROBE * 6
 # any single-row layout element, well below the token cap.
 NANONETS_FILLER_MAX_RUN = 400
 
+# --- Answer-extraction LLM (deterministic-marker fallback) ---
+# A series' parse_answers keys the answer off a printed marker ("Answer:", a
+# \boxed{...}, PUMaC's "(ANS: ...)"). Older material buries the final answer in
+# the solution prose with no marker to anchor on. As a last resort a text LLM
+# reads the answer out of the statement+solution (see src/answer_llm.py); a
+# series opts in simply by calling answer_llm.extract when its own parsing finds
+# nothing. By default this reuses the OCR engine's OpenAI-compatible endpoint --
+# the OCR VLM served there doubles as a competent text extractor, so the pipeline
+# stays local and dependency-free -- but it is fully swappable: point
+# ANSWER_LLM_BASE_URL / ANSWER_LLM_MODEL at any stronger OpenAI-compatible chat
+# model (including a Claude-compatible proxy) to sharpen the prose tier without
+# touching the pipeline. Set ANSWER_LLM_ENABLED = False to skip the fallback
+# entirely (unmarked problems are then simply omitted from the key, never
+# guessed).
+ANSWER_LLM_ENABLED = True
+ANSWER_LLM_BASE_URL = NANONETS_BASE_URL
+ANSWER_LLM_MODEL = None  # None -> the first model the endpoint serves
+ANSWER_LLM_TEMPERATURE = 0.0  # greedy: a fixed input should extract a fixed answer
+ANSWER_LLM_MAX_TOKENS = 64  # an answer is short; a longer reply is prose, not an answer
+ANSWER_LLM_PROMPT = (
+    "You are given a competition math problem followed by its full worked "
+    "solution. Reply with ONLY the final answer the problem asks for -- a number "
+    "or closed-form expression -- with no words, no explanation, and no "
+    "surrounding LaTeX $ delimiters.\n"
+    "Do not be misled by intermediate steps: a phrase like 'has no solution' or "
+    "'does not exist' inside the reasoning is usually about one case, not the "
+    "final answer.\n"
+    "If the problem asks for a proof and has no numeric/closed-form answer, or "
+    "the solution states no definitive final answer (e.g. it was redacted), reply "
+    "UNKNOWN. If the final answer itself is that no such value exists or that "
+    "there are infinitely many, reply exactly 'no solution' or 'infinitely many' "
+    "respectively.\n\n"
+)
+
 # Picture->problem mapping is geometric: each non-blank DETR Picture is assigned
 # to the problem whose statement it vertically sits in. Nanonets' inline <img>
 # tags are NOT trusted for this (the model both hallucinates them on text-only
