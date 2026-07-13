@@ -58,8 +58,20 @@ _FURNITURE_RE = re.compile(
     r"<(?:watermark|page_number)\b[^>]*>.*?</(?:watermark|page_number)>",
     re.IGNORECASE | re.DOTALL,
 )
-_POINTS_ONLY_RE = re.compile(r"^\(\s*\d+\s*\)$")  # "(1)" point-value cells
+# Point-value cells the model emits beside each problem: a parenthesized number
+# ("(1)"), or -- in Mandelbrot's two-column problem tables -- a single circled
+# digit ("①"..) or ballot box ("☐"). None is problem content; dropped as
+# furniture wherever a line/cell is nothing but one of these.
+_POINTS_ONLY_RE = re.compile(
+    r"^\(\s*\d+\s*\)$"
+    r"|^[①-⑳❶-❿➀-➉⓪☐-☒■□◻◼]+$"
+)
 _BLANK_RUN_RE = re.compile(r"_{2,}")  # answer blanks: "________"
+# Ordered-list scaffolding (see parse_layout's ordered_list_markers): a line
+# that *opens* a list item starts the next problem; all list/line-break tags are
+# flattened to spaces so none leak into the statement.
+_LI_OPEN_RE = re.compile(r"<li\b", re.IGNORECASE)
+_LIST_TAG_RE = re.compile(r"</?(?:ol|ul|li)\b[^>]*>|<br\s*/?>", re.IGNORECASE)
 # The unit that labels an answer blank, once the blank rule itself is gone:
 # a leading run of currency signs / short lowercase-or-number tokens up to
 # where the real statement starts (a capital letter, an opening paren, or the
@@ -297,7 +309,7 @@ def _clean_text_line(line: str) -> str:
 
 
 def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False,
-                 start_problem=None):
+                 start_problem=None, ordered_list_markers=False):
     """Turn Nanonets markdown into an ordered list of items.
 
     Each item is a dict ``{"kind": "text"|"image", "problem": int|None, "text": str}``
@@ -319,6 +331,11 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
     statement text (MATHCOUNTS answer-blank tables). When False (the default),
     every table block is kept verbatim as HTML -- the right choice for series
     whose tables are genuine tabular data, not packed problem lists.
+
+    `ordered_list_markers` is another series-scoped opt-in: when True, a line
+    opening an ``<ol>/<li>`` list item begins the next sequential problem, for
+    rounds that number problems by list position rather than a literal ``N.``
+    marker (see config.LayoutOptions).
     """
     match_marker = match_marker or _match_marker
     markdown = _FURNITURE_RE.sub("", markdown)
@@ -359,6 +376,17 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
             line = raw.strip()
             if not line:
                 continue
+            if ordered_list_markers:
+                # A line opening an <li> begins the next problem (numbered by
+                # list position; the printed "N." OCR'd into a separate graphic
+                # column). Flatten the list/line-break scaffolding either way so
+                # no <ol>/<li>/<br> tag leaks into the statement.
+                if _LI_OPEN_RE.search(line):
+                    flush()
+                    current = last = (last or 0) + 1
+                line = _LIST_TAG_RE.sub(" ", line).strip()
+                if not line:
+                    continue
             # Markers can arrive markdown-emphasized ("**1/1/12.**", "*26.*",
             # "### 5."); strip leading emphasis/heading chars so the matcher sees
             # the bare marker. Match before blank runs are scrubbed, so an answer
@@ -453,11 +481,18 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
                         # (rare) and is kept.
                         cell = _ANSWER_UNIT_RE.sub("", _clean_text_line(cell), count=1)
                     cell = _clean_text_line(cell)
-                    if cell:
+                    if cell and not _POINTS_ONLY_RE.match(cell):
                         parts.append(cell)
                 statement = " ".join(parts).strip()
                 if statement:
                     buf.append(statement)
+                continue
+            # A non-marker row is real tabular data belonging to the current
+            # problem -- kept verbatim -- unless it is nothing but a point-value
+            # cell ("<td>①</td>"), a standalone furniture row emitted beside the
+            # problems, which is dropped.
+            row_text = _TAG_RE.sub(" ", row).strip()
+            if row_text and _POINTS_ONLY_RE.match(row_text):
                 continue
             buf.append(re.sub(r"\s+", " ", f"<table>{row}</table>").strip())
 

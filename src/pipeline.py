@@ -92,7 +92,9 @@ def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD, 
     return problems, detections, groups
 
 
-def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None):
+def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None,
+                     right_margin_frac=None, footer_frac=None, min_height_frac=None,
+                     equation_text_overlap=None):
     """Non-blank DETR Picture detections, top-to-bottom (reading order).
 
     `max_area_frac` (from a series' LayoutOptions) optionally drops any Picture
@@ -102,6 +104,24 @@ def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None):
     `header_frac` (also from LayoutOptions) optionally drops any Picture whose
     vertical center is within that fraction of the page height from the top --
     the running-header logo/title band (see config.header_picture_frac).
+
+    `right_margin_frac` (also from LayoutOptions) optionally drops any Picture
+    whose right edge reaches into that fraction of the page width at the right --
+    the answer/scoring gutter (see config.right_margin_picture_frac).
+
+    `footer_frac` is the vertical mirror of `header_frac`: drop any Picture whose
+    vertical center is within that fraction of the page height from the bottom --
+    the running page-footer band (see config.footer_picture_frac).
+
+    `min_height_frac` (also from LayoutOptions) optionally drops any Picture
+    shorter than that fraction of the page height -- inline equations/symbols
+    that DETR emits as short strips at a low threshold (see
+    config.min_picture_height_frac).
+
+    `equation_text_overlap` (also from LayoutOptions) optionally drops any *wide*
+    Picture (aspect ratio over config.EQUATION_PICTURE_MIN_ASPECT) whose area is
+    more than that fraction covered by a Text detection -- a display equation
+    (see config.equation_text_overlap).
     """
     pics = [
         d
@@ -114,6 +134,27 @@ def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None):
     if header_frac is not None:
         cutoff = header_frac * image.height
         pics = [d for d in pics if (d["box"][1] + d["box"][3]) / 2 > cutoff]
+    if right_margin_frac is not None:
+        cutoff = (1 - right_margin_frac) * image.width
+        pics = [d for d in pics if d["box"][2] < cutoff]
+    if footer_frac is not None:
+        cutoff = (1 - footer_frac) * image.height
+        pics = [d for d in pics if (d["box"][1] + d["box"][3]) / 2 < cutoff]
+    if min_height_frac is not None:
+        min_h = min_height_frac * image.height
+        pics = [d for d in pics if (d["box"][3] - d["box"][1]) >= min_h]
+    if equation_text_overlap is not None:
+        text_boxes = [
+            d["box"] for d in detections if d["label"] in config.TEXT_LABELS
+        ]
+
+        def _is_equation(box):
+            w, h = box[2] - box[0], box[3] - box[1]
+            if h <= 0 or w / h <= config.EQUATION_PICTURE_MIN_ASPECT:
+                return False
+            return any(_contained_frac(box, t) > equation_text_overlap for t in text_boxes)
+
+        pics = [d for d in pics if not _is_equation(d["box"])]
     pics = _drop_nested_pictures(pics)
     pics.sort(key=lambda d: (d["box"][1], d["box"][0]))
     return pics
@@ -259,7 +300,14 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
     problem's text (see below).
     """
     pics = _sorted_pictures(
-        detections, image, layout.max_picture_area_frac, layout.header_picture_frac
+        detections,
+        image,
+        layout.max_picture_area_frac,
+        layout.header_picture_frac,
+        layout.right_margin_picture_frac,
+        layout.footer_picture_frac,
+        layout.min_picture_height_frac,
+        layout.equation_text_overlap,
     )
     if not pics:
         return {}
@@ -415,7 +463,23 @@ def process_image_nanonets(
     print("[nanonets] Starting pipeline...")
     image = Image.open(image_path).convert("RGB")
     print("[nanonets] Running layout detection (DETR)...")
-    detections = detect.detect(image, threshold)
+    # Faint printed figures score below the text threshold, so a series can ask
+    # for Picture/Table boxes at a lower confidence (picture_detect_threshold)
+    # than the text used for problem-start geometry. Scan once at the lower of
+    # the two, then keep text/masking at the text threshold and let only the
+    # figures reach down to the picture threshold -- lowering the text threshold
+    # would inject spurious left-margin starts and drift figure assignment.
+    pic_thr = layout.picture_detect_threshold
+    scan_thr = min(threshold, pic_thr) if pic_thr is not None else threshold
+    scanned = detect.detect(image, scan_thr)
+    detections = [d for d in scanned if d["score"] >= threshold]
+    if pic_thr is not None and pic_thr < threshold:
+        faint_figures = [d for d in scanned if d["label"] in config.IMAGE_LABELS]
+        assign_detections = [
+            d for d in detections if d["label"] not in config.IMAGE_LABELS
+        ] + faint_figures
+    else:
+        assign_detections = detections
     print("[nanonets] Layout detection done.")
     print("[nanonets] Running whole-page OCR (Nanonets)...")
     markdown = _ocr_page(
@@ -424,6 +488,9 @@ def process_image_nanonets(
         layout.nanonets_temperature,
         cache=cache,
         cache_key=image_path,
+        # Mask only the confident figures (the text-threshold detections); the
+        # faint extras include page-spanning false positives that must never
+        # blank the whole page on the masking rung.
         mask_boxes=_figure_mask_boxes(detections),
     )
     print("[nanonets] Nanonets OCR done.")
@@ -432,6 +499,7 @@ def process_image_nanonets(
         match_marker,
         split_marker_table_rows=layout.split_marker_table_rows,
         start_problem=carry,
+        ordered_list_markers=layout.ordered_list_markers,
     )
 
     print("[nanonets] Assembling problems...")
@@ -471,7 +539,7 @@ def process_image_nanonets(
     # remaining, page-starting problems line up 1:1 with DETR's starts. A figure
     # above the first start still goes to carry (handled inside _assign_pictures).
     geom_seq = [n for n in problem_seq if n != carry]
-    groups = _assign_pictures(detections, image, geom_seq, layout, items, carry)
+    groups = _assign_pictures(assign_detections, image, geom_seq, layout, items, carry)
     for number in sorted(groups):
         prob = problem_for(number)
         for pic in groups[number]:
@@ -799,6 +867,10 @@ def process_solution_document(
             match,
             split_marker_table_rows=layout.split_marker_table_rows,
             start_problem=carry,
+            # ordered_list_markers is a statement-page numbering fix only; a
+            # solution document's own "N." markers drive figure assignment, so
+            # it stays at the default here (avoid mis-splitting a solution's
+            # genuine ordered list into spurious problems).
         )
         pics = _sorted_pictures(
             detections, image, layout.max_picture_area_frac, layout.header_picture_frac

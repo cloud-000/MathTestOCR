@@ -157,6 +157,12 @@ NANONETS_MAX_PICTURE_AREA_FRAC = 0.5
 # wanted as separate crops.
 NESTED_PICTURE_FRAC = 0.9
 
+# Minimum width/height ratio for the equation_text_overlap filter (LayoutOptions)
+# to treat a text-covered Picture as a display equation rather than a figure. A
+# real labeled diagram (e.g. a numbered grid) is roughly square and stays below
+# this; equation strips and stacked fractions are wider.
+EQUATION_PICTURE_MIN_ASPECT = 2.5
+
 # --- Solution-figure assignment (pipeline.process_solution_document) ---
 # Tier 0 reads problem-marker positions from the solution PDF's embedded text
 # layer. A text block only counts as a problem start when at least this much
@@ -200,6 +206,47 @@ class LayoutOptions:
     # None -> keep header-region pictures. Only PUMaC (Princeton shield logo)
     # opts in; keep the band small enough to never reach a real figure.
     header_picture_frac: float | None = None
+    # Drop any DETR Picture whose *right edge* reaches into this fraction of the
+    # page width at the right -- the answer/scoring gutter. Series with a fixed
+    # right-hand column of furniture (Mandelbrot prints a point-value circle
+    # beside every problem and a wide "SCORE:" box in the bottom-right, both of
+    # which DETR reads as Pictures) can drop it geometrically: real figures stay
+    # in the statement column and never cross into the gutter, so a right-edge
+    # test separates them cleanly where vertical position cannot. None -> keep
+    # right-gutter pictures. Pairs with picture_detect_threshold, which surfaces
+    # these faint furniture boxes in the first place.
+    right_margin_picture_frac: float | None = None
+    # Symmetric to header_picture_frac at the *bottom*: drop any DETR Picture
+    # whose vertical center sits within this fraction of the page height from the
+    # bottom -- the running page-footer band. Mandelbrot's stylized "SCORE:"
+    # label at the foot of the page sits in the statement column (so the
+    # right-margin filter misses it) but DETR reads it as a Picture; it is always
+    # below the last problem's figure. None -> keep footer-region pictures. Keep
+    # the band small enough to never reach the last problem's real figure.
+    footer_picture_frac: float | None = None
+    # Drop any DETR Picture shorter than this fraction of the page height. At a
+    # low picture_detect_threshold DETR starts emitting inline display equations
+    # and lone math symbols as short, wide "Picture" strips; a real 2D diagram is
+    # meaningfully taller. None -> keep pictures of any height. Set just under the
+    # shortest genuine figure, since the two bands sit close together.
+    min_picture_height_frac: float | None = None
+    # Drop any *wide* DETR Picture (aspect ratio over EQUATION_PICTURE_MIN_ASPECT)
+    # whose area is more than this fraction covered by a confident Text box -- a
+    # display equation the low picture threshold surfaces as a figure. The
+    # aspect guard is what makes this safe: a real diagram that happens to carry
+    # digit labels (a numbered grid) is squarish and kept, while a stacked
+    # fraction or an equation strip is wide and text-covered and dropped. None ->
+    # keep text-covered pictures.
+    equation_text_overlap: float | None = None
+    # Detect Picture/Table figures at this (lower) confidence, independently of
+    # the text-detection threshold used for problem-start geometry. Faint printed
+    # diagrams score well below the text threshold (Mandelbrot's small
+    # answer-column figures land at ~0.2-0.35), so the whole-page pass misses
+    # them; lowering the *text* threshold instead would inject spurious
+    # left-margin starts and scramble figure-to-problem alignment. None -> use the
+    # same threshold as text. Pair with the area/header/footer filters, which the
+    # extra low-confidence boxes lean on to stay clean.
+    picture_detect_threshold: float | None = None
     # When DETR's left-margin problem-start count disagrees with nanonets'
     # problem count, fall back to splitting page content at the largest vertical
     # gaps (see pipeline._gap_based_starts). Off by default: on pages with
@@ -207,9 +254,18 @@ class LayoutOptions:
     gap_based_picture_fallback: bool = False
     # Split a <table> block row-by-row, rewriting each row whose leading cell is
     # a problem marker into plain statement text (MATHCOUNTS packs many problems
-    # into one answer-blank table). Off by default: other series' tables are
-    # real tabular data, kept verbatim as HTML.
+    # into one answer-blank table; Mandelbrot lays every page out as a two-column
+    # <td>N. statement</td><td>point-value</td> table). Off by default: other
+    # series' tables are real tabular data, kept verbatim as HTML.
     split_marker_table_rows: bool = False
+    # Treat an <ol>/<li> ordered-list item as the next sequential problem start.
+    # A few rounds print the problem number in a separate graphic column (which
+    # OCRs as a stray <img>/point-value cell, not text) and let the statements
+    # fall out as a bare <ol><li> list carrying no literal "N." marker; without
+    # this the whole page has no markers and yields an empty problems.json. Off
+    # by default: a series whose statements contain genuine ordered lists would
+    # see each list item mis-read as a new problem. Only Mandelbrot opts in.
+    ordered_list_markers: bool = False
     # Take each problem's start position from its left-margin heading box alone
     # (see config.HEADER_LABELS), ignoring the statement/body text below it. On
     # by default a problem whose number sits on its own heading line (e.g. Purple

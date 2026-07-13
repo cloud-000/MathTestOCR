@@ -121,17 +121,67 @@ class MandelbrotSeries(Series):
     has_answers = True
 
     def layout_options(self):
-        """Nudge the OCR temperature off greedy for Mandelbrot's grid pages.
+        """Nudge the OCR temperature off greedy, and unpack the problem table.
 
         Greedy decoding (temperature 0.0) sometimes gets stuck repeating a
         ``<table>`` row when a page shows a grid/diagram, blowing past the
         runaway guard or padding the transcription. A small bump breaks the loop
         while keeping transcription faithful; the layout heuristics stay at the
         conservative base defaults. Raise further only if grids still loop.
+
+        ``split_marker_table_rows``: every Mandelbrot test page lays its problems
+        out as a two-column table -- ``<td>N. <statement></td>`` beside a
+        point-value cell -- so the problem markers live *inside* table cells. On
+        pages whose cells also carry figure ``<img>`` tags the ``<img>`` splits
+        the block apart and the markers fall through to the plain-text scanner;
+        but on pages without figures the whole ``<table>`` stays in one token and
+        (kept verbatim, the default) yields no markers at all -- an empty
+        ``problems.json``. Unpacking marker rows into plain statements recovers
+        those pages. The point-value cell (a circled digit ``①`` or a ``☐`` box)
+        is not an answer blank, so it survives cell cleanup as furniture; it is
+        dropped by nanonets' point-value filter.
+
+        ``ordered_list_markers``: one round (2010-11 Round Three National) has the
+        model number problems with an ``<ol>/<li>`` list -- the printed number
+        OCR'd into the point-value column as a stray ``<img>`` -- so the
+        statements carry no literal ``N.`` marker and the page would otherwise
+        parse to nothing. Enabling it makes each list item the next problem.
+
+        Figure detection: every page prints its problems in a two-column table
+        with small answer-column diagrams that DETR scores well below the text
+        threshold (~0.2-0.35), so at the default threshold only the boldest
+        figure per page survives. ``picture_detect_threshold`` lowers the figure
+        confidence to 0.2 (text/problem-start geometry stays at the default), and
+        the region filters keep the extra low-confidence boxes clean:
+        ``max_picture_area_frac`` drops the occasional whole-page box,
+        ``header_picture_frac`` drops the running header (fractal logo + title
+        banner), ``right_margin_picture_frac`` drops the fixed right-hand
+        furniture column -- the point-value circle beside every problem and the
+        wide bottom-right "SCORE:" box -- and ``footer_picture_frac`` drops the
+        stylized "SCORE:" label at the foot of the page (which sits in the
+        statement column, so the right-margin filter alone misses it). Between
+        them the right-edge and bottom-band tests fence off the answer/scoring
+        furniture without touching the statement-column figures, which DETR
+        scores low but which the counts confirm are real diagrams.
+        The last false positives the low threshold surfaces are the problems'
+        own math typeset as figures. ``min_picture_height_frac`` drops the short
+        ones -- inline equation strips and lone symbols, well under any real 2D
+        diagram's height -- and ``equation_text_overlap`` drops the tall ones --
+        stacked display fractions -- by the tell that they are wide and sit under
+        a Text box, which a real (even digit-labeled) diagram does not.
         """
         return config.LayoutOptions(
             nanonets_temperature=0.1,
             drop_trailing_solution_figures=1,
+            split_marker_table_rows=True,
+            ordered_list_markers=True,
+            picture_detect_threshold=0.2,
+            max_picture_area_frac=0.5,
+            header_picture_frac=0.20,
+            right_margin_picture_frac=0.20,
+            footer_picture_frac=0.14,
+            min_picture_height_frac=0.036,
+            equation_text_overlap=0.3,
         )
 
     def discover_tests(self, data_dir):
