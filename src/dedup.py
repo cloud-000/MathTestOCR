@@ -32,9 +32,63 @@ _NOISE_CMDS = re.compile(
     r"\\(?:qquad|quad|thinspace|textbf|textit|textrm|text|mathrm|mathbf|left|right|"
     r"displaystyle|dfrac|tfrac|,|;|:|!|\s)"
 )
-_IMG_MD = re.compile(r"!\[[^\]]*\]\([^)]*\)")  # markdown image
 _IMG_TAG = re.compile(r"<img[^>]*>", re.IGNORECASE)
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+
+def _strip_markdown_images(text: str) -> str:
+    """Remove inline Markdown images, including paths with parentheses.
+
+    A regex that stops at the first ``)`` leaks the tail of destinations such
+    as ``![](figures/(draft)/problem.png)`` into duplicate matching.  Walk the
+    brackets and parentheses instead so the entire image reference is ignored.
+    """
+    pieces = []
+    cursor = 0
+    search_from = 0
+
+    while True:
+        start = text.find("![", search_from)
+        if start < 0:
+            pieces.append(text[cursor:])
+            return "".join(pieces)
+
+        bracket_depth = 1
+        pos = start + 2
+        while pos < len(text) and bracket_depth:
+            if text[pos] == "\\":
+                pos += 2
+                continue
+            if text[pos] == "[":
+                bracket_depth += 1
+            elif text[pos] == "]":
+                bracket_depth -= 1
+            pos += 1
+
+        if bracket_depth or pos >= len(text) or text[pos] != "(":
+            search_from = start + 2
+            continue
+
+        paren_depth = 1
+        pos += 1
+        while pos < len(text) and paren_depth:
+            if text[pos] == "\\":
+                pos += 2
+                continue
+            if text[pos] == "(":
+                paren_depth += 1
+            elif text[pos] == ")":
+                paren_depth -= 1
+            pos += 1
+
+        if paren_depth:
+            search_from = start + 2
+            continue
+
+        pieces.append(text[cursor:start])
+        pieces.append(" ")
+        cursor = pos
+        search_from = pos
 
 
 def normalize(text: str) -> str:
@@ -47,7 +101,7 @@ def normalize(text: str) -> str:
     problems apart.
     """
     t = text.replace(FIGURE_PLACEHOLDER, " ")
-    t = _IMG_MD.sub(" ", t)
+    t = _strip_markdown_images(t)
     t = _IMG_TAG.sub(" ", t)
     t = t.lower()
     t = _NOISE_CMDS.sub(" ", t)
