@@ -90,6 +90,18 @@ def _select_tests(series, tests, test_id):
     return selected
 
 
+def _exclude_ignored_tests(series, tests):
+    """Apply permanent series exclusions before selection or OCR startup."""
+    kept = []
+    ignored = []
+    for test in tests:
+        (ignored if series.ignore_test(test) else kept).append(test)
+    if ignored:
+        ids = ", ".join(test.id for test in ignored)
+        print(f"[{series.name}] ignored {len(ignored)} test(s): {ids}")
+    return kept
+
+
 def _filter_existing(series, tests, out_root, existing):
     """Keep only tests that already have an output folder under `out_root`.
 
@@ -133,6 +145,7 @@ def _cmd_parse_batch(args):
     data_dir = _resolve_data_dir(series, args.data_dir)
     tests = series.discover_tests(data_dir)
     print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
+    tests = _exclude_ignored_tests(series, tests)
     tests = _select_tests(series, tests, args.test)
     _run_parse_batch(series, tests, args)
 
@@ -244,6 +257,7 @@ def cmd_solutions(args):
 
     tests = series.discover_tests(data_dir)
     print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
+    tests = _exclude_ignored_tests(series, tests)
     tests = _select_tests(series, tests, args.test)
     tests = _filter_existing(series, tests, out_root, args.existing)
     if not tests:

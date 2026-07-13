@@ -84,6 +84,7 @@ class Series:
     name = "base"
     has_solutions = False
     has_answers = False
+    ignored_test_substrings: tuple[str, ...] = ()
 
     # --- Discovery -------------------------------------------------------
     def discover_tests(self, data_dir):
@@ -93,6 +94,16 @@ class Series:
             raise NotADirectoryError(f"data dir not found: {root}")
         tests = [Test(id=p.stem, source=p) for p in sorted(root.glob("*.pdf"))]
         return tests
+
+    def ignore_test(self, test: Test) -> bool:
+        """Return True when a discovered test should never be processed.
+
+        The default supports declarative, case-insensitive substring exclusions
+        against the stable test id. Override this hook when a series needs more
+        specific logic than ``ignored_test_substrings`` can express.
+        """
+        test_id = test.id.casefold()
+        return any(part.casefold() in test_id for part in self.ignored_test_substrings)
 
     def test_pages(self, test: Test, workdir):
         """Return page-image paths for `test` in reading order.

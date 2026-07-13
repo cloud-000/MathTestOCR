@@ -8,9 +8,11 @@ On-disk layout (data dir is ``Mandelbrot/out``)::
     out/<season>/mtpsoln<n>.pdf        their solutions
     out/<season>/mtptopics<n>.pdf      topic lists (not problems -- skipped)
 
-A test is any ``*test*.pdf`` (id ``<season>_<stem>``, e.g. ``2017-18_tmctest1N``);
-``mtptopics*`` is excluded because it has no ``test`` in the name. The solution is
-the sibling with ``test`` swapped to ``soln``.
+Discovery finds every ``*test*.pdf`` (id ``<season>_<stem>``, e.g.
+``2017-18_tmctest1N``), then the series-wide ``mtp`` exclusion removes team-play
+rounds before parsing or OCR. ``mtptopics*`` is never discovered because it has
+no ``test`` in the name. The solution is the sibling with ``test`` swapped to
+``soln``.
 
 The solution PDF opens with an "Answer Key" box -- short ``N. answer`` entries
 in column order (``4. 12  1. 5  5. 3025 ...``) -- before the worked solutions
@@ -119,6 +121,7 @@ class MandelbrotSeries(Series):
     name = "mandelbrot"
     has_solutions = True
     has_answers = True
+    ignored_test_substrings = ("mtp",)
 
     def layout_options(self):
         """Nudge the OCR temperature off greedy, and unpack the problem table.
