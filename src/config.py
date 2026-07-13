@@ -162,6 +162,12 @@ NESTED_PICTURE_FRAC = 0.9
 # real labeled diagram (e.g. a numbered grid) is roughly square and stays below
 # this; equation strips and stacked fractions are wider.
 EQUATION_PICTURE_MIN_ASPECT = 2.5
+# Minimum confidence for a Text/Formula box to count toward the
+# equation_text_overlap filter's coverage test. A display equation sits under a
+# genuine Formula box (~0.45+); a real figure draws at most a stray, very
+# low-confidence Text box (~0.2) over itself, so this floor tells them apart even
+# below the main text-detection threshold.
+EQUATION_TEXT_MIN_SCORE = 0.4
 
 # --- Solution-figure assignment (pipeline.process_solution_document) ---
 # Tier 0 reads problem-marker positions from the solution PDF's embedded text

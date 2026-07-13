@@ -149,11 +149,13 @@ class MandelbrotSeries(Series):
 
         Figure detection: every page prints its problems in a two-column table
         with small answer-column diagrams that DETR scores well below the text
-        threshold (~0.2-0.35), so at the default threshold only the boldest
-        figure per page survives. ``picture_detect_threshold`` lowers the figure
-        confidence to 0.2 (text/problem-start geometry stays at the default), and
-        the region filters keep the extra low-confidence boxes clean:
-        ``max_picture_area_frac`` drops the occasional whole-page box,
+        threshold, so at the default threshold only the boldest figure per page
+        survives -- and on some pages (e.g. 2018-19 Round Three National) every
+        diagram scores under 0.2. ``picture_detect_threshold`` lowers the figure
+        confidence to 0.15 (text/problem-start geometry stays at the default),
+        and the region filters keep the extra low-confidence boxes clean:
+        ``max_picture_area_frac`` drops the page-region boxes DETR emits at this
+        confidence (real diagrams occupy a tiny fraction of the page),
         ``header_picture_frac`` drops the running header (fractal logo + title
         banner), ``right_margin_picture_frac`` drops the fixed right-hand
         furniture column -- the point-value circle beside every problem and the
@@ -175,8 +177,8 @@ class MandelbrotSeries(Series):
             drop_trailing_solution_figures=1,
             split_marker_table_rows=True,
             ordered_list_markers=True,
-            picture_detect_threshold=0.2,
-            max_picture_area_frac=0.5,
+            picture_detect_threshold=0.15,
+            max_picture_area_frac=0.15,
             header_picture_frac=0.20,
             right_margin_picture_frac=0.20,
             footer_picture_frac=0.14,

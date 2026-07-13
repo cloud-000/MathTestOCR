@@ -94,7 +94,7 @@ def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD, 
 
 def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None,
                      right_margin_frac=None, footer_frac=None, min_height_frac=None,
-                     equation_text_overlap=None):
+                     equation_text_overlap=None, equation_text_boxes=None):
     """Non-blank DETR Picture detections, top-to-bottom (reading order).
 
     `max_area_frac` (from a series' LayoutOptions) optionally drops any Picture
@@ -121,7 +121,10 @@ def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None,
     `equation_text_overlap` (also from LayoutOptions) optionally drops any *wide*
     Picture (aspect ratio over config.EQUATION_PICTURE_MIN_ASPECT) whose area is
     more than that fraction covered by a Text detection -- a display equation
-    (see config.equation_text_overlap).
+    (see config.equation_text_overlap). `equation_text_boxes` supplies the boxes
+    to test coverage against; when None the Text-labeled boxes in `detections`
+    are used, but a caller running figures below the text threshold passes a
+    lower-confidence text set so equations DETR was unsure about are still caught.
     """
     pics = [
         d
@@ -144,9 +147,11 @@ def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None,
         min_h = min_height_frac * image.height
         pics = [d for d in pics if (d["box"][3] - d["box"][1]) >= min_h]
     if equation_text_overlap is not None:
-        text_boxes = [
-            d["box"] for d in detections if d["label"] in config.TEXT_LABELS
-        ]
+        text_boxes = (
+            equation_text_boxes
+            if equation_text_boxes is not None
+            else [d["box"] for d in detections if d["label"] in config.TEXT_LABELS]
+        )
 
         def _is_equation(box):
             w, h = box[2] - box[0], box[3] - box[1]
@@ -278,7 +283,8 @@ def _gap_based_starts(detections, image, n):
     return starts
 
 
-def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=None):
+def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=None,
+                     equation_text_boxes=None):
     """Map each non-blank DETR Picture to a problem number by vertical position.
 
     `problem_seq` is the ordered list of problem numbers (top-to-bottom). Each
@@ -308,6 +314,7 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
         layout.footer_picture_frac,
         layout.min_picture_height_frac,
         layout.equation_text_overlap,
+        equation_text_boxes,
     )
     if not pics:
         return {}
@@ -480,6 +487,19 @@ def process_image_nanonets(
         ] + faint_figures
     else:
         assign_detections = detections
+    # The equation_text_overlap filter needs to see the Text/Formula boxes DETR
+    # placed under a faint figure to tell a display equation from a real diagram.
+    # Those boxes often score below the text threshold, so gather them from the
+    # low-confidence scan (down to config.EQUATION_TEXT_MIN_SCORE) -- kept out of
+    # assign_detections proper so they never register as problem starts.
+    equation_text_boxes = None
+    if layout.equation_text_overlap is not None:
+        equation_text_boxes = [
+            d["box"]
+            for d in scanned
+            if d["label"] in config.TEXT_LABELS
+            and d["score"] >= config.EQUATION_TEXT_MIN_SCORE
+        ]
     print("[nanonets] Layout detection done.")
     print("[nanonets] Running whole-page OCR (Nanonets)...")
     markdown = _ocr_page(
@@ -539,7 +559,9 @@ def process_image_nanonets(
     # remaining, page-starting problems line up 1:1 with DETR's starts. A figure
     # above the first start still goes to carry (handled inside _assign_pictures).
     geom_seq = [n for n in problem_seq if n != carry]
-    groups = _assign_pictures(assign_detections, image, geom_seq, layout, items, carry)
+    groups = _assign_pictures(
+        assign_detections, image, geom_seq, layout, items, carry, equation_text_boxes
+    )
     for number in sorted(groups):
         prob = problem_for(number)
         for pic in groups[number]:
