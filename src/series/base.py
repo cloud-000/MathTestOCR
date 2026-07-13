@@ -183,6 +183,19 @@ class Series:
         """
         return markdown
 
+    def solution_figure_floor(self, pdf_page, image):
+        """Rendered y below which a solution page's figures are furniture, or None.
+
+        The figure-side partner of `clean_solution_markdown`: that hook strips a
+        back-cover credits box / colophon from the *text*, but DETR still crops
+        the same box as a Picture and binds it to the last problem. Returning a y
+        (in the rendered image's coordinates) makes the pipeline drop any Picture
+        whose vertical centre falls below it. `pdf_page` is the born-digital PDF
+        page (so the boundary can be read from the exact text layer) and `image`
+        the rendered page. Default None keeps every figure.
+        """
+        return None
+
     def parse_solutions(self, full_text: str) -> dict:
         """Segment the whole-test solution OCR into {problem_number: text}.
 

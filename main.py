@@ -307,6 +307,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
                 clean_page=series.clean_solution_markdown,
                 source_pdf=sol,
                 match_solution=series.solution_index_marker,
+                figure_floor=series.solution_figure_floor,
             )
             cleaned = "\n\n".join(
                 series.clean_solution_markdown(i, md) for i, md in enumerate(pages_md)

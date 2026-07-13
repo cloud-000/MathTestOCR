@@ -55,6 +55,16 @@ _BACK_COVER_RE = re.compile(
     r"(?im)^[^\S\n]*(?:©|\(c\)|copyright)?[^\S\n]*proof school\b"
 )
 
+# The PDF text-layer form of that same copyright line, for fencing figures (see
+# solution_figure_floor). In the born-digital text the © glyph decodes as a
+# leading combining ring, so the line -- "<ring>Proof School 2018" -- is not
+# anchored the way `_BACK_COVER_RE` expects; match "Proof School" adjacent to a
+# four-digit year instead, which the copyright line carries but the lone
+# "Proof School" footer line does not, so this lands on the true content boundary.
+_PDF_COPYRIGHT_RE = re.compile(
+    r"proof school\s*\d{4}|\d{4}\s*proof school", re.IGNORECASE
+)
+
 
 def _strip_back_cover(text: str) -> str:
     """Drop the trailing back-cover boilerplate from a solution page's markdown."""
@@ -183,7 +193,6 @@ class MandelbrotSeries(Series):
         """
         return config.LayoutOptions(
             nanonets_temperature=0.1,
-            drop_trailing_solution_figures=1,
             split_marker_table_rows=True,
             ordered_list_markers=True,
             picture_detect_threshold=0.15,
@@ -228,6 +237,30 @@ class MandelbrotSeries(Series):
         credits/boilerplate would otherwise trail into the last solution.
         """
         return _strip_back_cover(_split_answer_key(markdown)[1])
+
+    def solution_figure_floor(self, pdf_page, image):
+        """Fence out the back-cover credits box printed after the last solution.
+
+        The figure-side partner of `_strip_back_cover`: the solutions PDF's final
+        page ends with a "© Proof School <year>" copyright line, then a boxed
+        "Problem Credits" table. DETR crops that box as a Picture and binds it to
+        the last problem (e.g. 2018-19 Round Four Regional's problem 7). The
+        copyright line is the boundary where real content stops -- everything
+        below it is furniture -- so any figure whose centre falls below it is
+        dropped. The line is read from the born-digital text layer (topmost match,
+        since only the last page carries it) and scaled to rendered coordinates;
+        pages without it (every page but the last) return None and keep every
+        figure.
+        """
+        ys = [
+            line["bbox"][1]
+            for block in pdf_page.get_text("dict")["blocks"]
+            for line in block.get("lines", [])
+            if _PDF_COPYRIGHT_RE.search("".join(s["text"] for s in line["spans"]))
+        ]
+        if not ys or not pdf_page.rect.height:
+            return None
+        return min(ys) * (image.height / pdf_page.rect.height)
 
     def parse_answers(self, test, pages_markdown):
         """Read the "Answer Key" box from the first page that carries one."""

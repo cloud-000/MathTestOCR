@@ -304,10 +304,6 @@ class LayoutOptions:
     # repeat a <table> row). Higher values trade transcription fidelity for
     # loop-breaking, so keep it as low as still works.
     nanonets_temperature: float = NANONETS_TEMPERATURE
-    # Drop this many final solution-document figure crops after assignment.
-    # Useful for series with a decorative logo/back-cover graphic after the
-    # last worked solution; 0 keeps every detected solution figure.
-    drop_trailing_solution_figures: int = 0
     # Place each statement figure crop inline in the problem text (an
     # ![](problem_<n>_image_<k>.png) ref at the position nanonets emitted its
     # <img> tag), mirroring the solution-figure inlining. Off by default:

@@ -926,6 +926,7 @@ def process_solution_document(
     clean_page=None,
     source_pdf=None,
     match_solution=None,
+    figure_floor=None,
 ):
     """OCR a solution document and crop its figures, assigned to problems.
 
@@ -949,6 +950,14 @@ def process_solution_document(
     `_text_layer_markers`), used whenever its problem set agrees with the OCR's
     for the page; otherwise assignment falls back to the OCR-only tiers
     (`_assign_solution_pics`).
+
+    `figure_floor` is the series' `Series.solution_figure_floor` ((pdf_page,
+    image) -> rendered y or None): a Picture whose vertical centre falls below
+    the returned y is page furniture printed after the last worked solution (a
+    back-cover credits box / colophon) and is dropped. It needs the PDF text
+    layer, so it runs only when `source_pdf` is a PDF; None (any page without the
+    marker) keeps every figure. This is the figure-side partner of `clean_page`'s
+    back-cover text stripping.
     """
     layout = layout or config.LayoutOptions()
     thr = threshold if threshold is not None else config.NANONETS_DETECT_THRESHOLD
@@ -990,12 +999,29 @@ def process_solution_document(
             # genuine ordered list into spurious problems).
         )
         pics = _sorted_pictures(
-            detections, image, layout.max_picture_area_frac, layout.header_picture_frac
+            detections,
+            image,
+            layout.max_picture_area_frac,
+            layout.header_picture_frac,
+            layout.right_margin_picture_frac,
+            layout.footer_picture_frac,
+            layout.min_picture_height_frac,
+            # equation_text_overlap is intentionally not applied here: it needs the
+            # low-threshold companion Text scan the statement path runs (this path
+            # detects at the plain threshold), and a solution's genuine diagrams are
+            # often wide (a labeled strip) and sit amid prose, so the wide-over-text
+            # test would drop real figures. The furniture that reaches this path --
+            # the running-header/title banner relocated to fill a short last page's
+            # right-hand whitespace -- is fenced off by right_margin_picture_frac.
         )
+        # pdf_io names rendered pages "page_<pdf page number>.png".
+        pdf_index = int(Path(path).stem.split("_")[1]) - 1 if doc is not None else None
+        if pics and doc is not None and figure_floor is not None:
+            floor = figure_floor(doc[pdf_index], image)
+            if floor is not None:
+                pics = [p for p in pics if (p["box"][1] + p["box"][3]) / 2 < floor]
         assigned = None
         if pics and doc is not None:
-            # pdf_io names rendered pages "page_<pdf page number>.png".
-            pdf_index = int(Path(path).stem.split("_")[1]) - 1
             markers, gutter = _text_layer_markers(doc[pdf_index], image, match, carry)
             new_numbers = {it["problem"] for it in items} - {None, carry}
             if markers and {m[2] for m in markers} == new_numbers:
@@ -1029,9 +1055,6 @@ def process_solution_document(
             carry = max(page_numbers)
     if doc is not None:
         doc.close()
-    drop = max(layout.drop_trailing_solution_figures, 0)
-    if drop:
-        figure_items = figure_items[:-drop] if drop < len(figure_items) else []
     figures = {}
     for number, solution, crop in figure_items:
         figures.setdefault(number, {}).setdefault(solution, []).append(crop)
