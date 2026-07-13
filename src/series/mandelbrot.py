@@ -175,5 +175,20 @@ class MandelbrotSeries(Series):
                 return answers
         return {}
 
+    def duplicate_scope(self, test_id, across=False):
+        """Bucket by season. Mandelbrot reuses problems across a season's
+        sibling rounds (a National and Regional individual round, or the
+        team-play round, of the same season share problems), so every
+        ``<season>_*`` test -- ``2017-18_tmctest1N``, ``2017-18_tmctest1R``,
+        ``2017-18_mtptest1``, ... -- is compared together, but never against a
+        different season's tests.
+
+        With ``across=True`` (``dedup --across-years``) the season is dropped
+        and every test shares one bucket, catching problems recycled across
+        seasons."""
+        if across:
+            return "all"
+        return test_id.split("_", 1)[0]
+
     # match_marker stays default: rounds number "1." / "1)" normally. Add an
     # override here (mirroring UsamtsSeries) if a real run reveals a quirk.
