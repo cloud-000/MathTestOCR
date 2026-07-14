@@ -63,6 +63,7 @@ class MathcountsSeries(Series):
     name = "mathcounts"
     has_solutions = False  # shared per-level solutions.pdf deferred -- see module docstring
     has_answers = True
+    ignored_test_substrings = ("masters",)
 
     def layout_options(self):
         """Opt into the MATHCOUNTS-tuned nanonets figure/table heuristics.
