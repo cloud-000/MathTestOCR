@@ -75,6 +75,10 @@ def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD, 
     `match` is an optional series-specific marker matcher (see
     anchors._match_marker) for competition-specific numbering quirks.
     """
+    if config.PRINT_TIME:
+        from datetime import datetime
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Parsing page {image_path}...")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Calling OCR for page {image_path} (mlx)...")
     image = Image.open(image_path).convert("RGB")
     detections = detect.detect(image, threshold)
     if not detections:
@@ -507,6 +511,10 @@ def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=N
     rung; when empty the masking rung is skipped (e.g. answer pages with no
     detection pass).
     """
+    if config.PRINT_TIME:
+        from datetime import datetime
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Parsing page {cache_key or 'unknown'}...")
+
     if cache is not None and cache_key is not None:
         hit = cache.get(cache_key)
         # Ignore a cached page that is itself a runaway. An older guard version
@@ -514,17 +522,26 @@ def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=N
         # since learned new loop shapes); serving it would silently drop every
         # problem below the loop. Re-OCR heals it and re-caches a clean pass.
         if hit is not None and not nanonets_mod._is_runaway(hit):
+            if config.PRINT_TIME:
+                from datetime import datetime
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Page {cache_key} found in cache.")
             return hit
     temps = [base_temp] + [t for t in config.NANONETS_RETRY_TEMPS if t > base_temp]
     for i, temp in enumerate(temps):
         if i:
             print(f"[nanonets] runaway; retrying at temperature {temp}")
+        if config.PRINT_TIME:
+            from datetime import datetime
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Calling OCR for page {cache_key or 'unknown'} (temp={temp})...")
         markdown, runaway = client.parse_page(image, temp)
         if not runaway:
             break
     else:
         if mask_boxes:
             print("[nanonets] runaway persists; masking figures and re-OCRing")
+            if config.PRINT_TIME:
+                from datetime import datetime
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Calling OCR for page {cache_key or 'unknown'} (masking figures)...")
             markdown, runaway = client.parse_page(
                 image, temps[-1], mask_boxes=mask_boxes
             )

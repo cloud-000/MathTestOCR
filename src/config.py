@@ -425,3 +425,7 @@ DEDUP_THRESHOLD = 0.85
 # be meaningful -- a one-line answer-blank prompt would match many others. They
 # are compared by normalized-exact equality instead.
 DEDUP_MIN_SHINGLE_LEN = 40
+
+# --- Print time flag ---
+# If True, print the current time every time we parse/OCR a new page.
+PRINT_TIME = False

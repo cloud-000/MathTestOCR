@@ -519,6 +519,11 @@ def _add_engine_args(p):
         help="cache whole-page OCR in each test dir and reuse it on later runs "
         "(nanonets only; DETR still runs). Delete the cache file to re-OCR.",
     )
+    p.add_argument(
+        "--print-time",
+        action="store_true",
+        help="print the current time every time we parse a new page",
+    )
 
 
 def main():
@@ -608,6 +613,7 @@ def main():
     p_pdf.set_defaults(func=cmd_pdf)
 
     args = parser.parse_args()
+    config.PRINT_TIME = getattr(args, "print_time", False)
     args.func(args)
 
 
