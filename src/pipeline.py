@@ -1,11 +1,15 @@
 """Orchestration: page image -> structured problems.
 
-Two engines:
+Engines:
   * mlx       -- detect -> OCR each text box -> find anchors -> group -> assemble.
                  No global VLM reasoning; all segmentation is deterministic geometry.
   * nanonets  -- one whole-page OCR pass returns problem-segmented markdown with
                  inline <img> tags; DETR supplies only the image crops, mapped to
-                 problems by reading-order ordinal (see process_image_nanonets).
+                 problems by reading-order ordinal (see process_image_markdown).
+  * llama     -- same whole-page-markdown path as nanonets, but the page is OCR'd
+                 by the hosted LlamaCloud parsing API instead of the local
+                 endpoint (see src/llama.py). Both are config.MARKDOWN_ENGINES,
+                 so process_image_markdown drives either interchangeably.
 """
 
 from dataclasses import dataclass, field
@@ -374,7 +378,7 @@ def _point_marker_row_starts(image, right_margin_frac, header_frac, footer_frac,
 
 
 def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=None,
-                     equation_text_boxes=None):
+                     equation_text_boxes=None, engine="ocr"):
     """Map each non-blank DETR Picture to a problem number by vertical position.
 
     `problem_seq` is the ordered list of problem numbers (top-to-bottom). Each
@@ -470,7 +474,7 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
         return groups
     if len(starts) != len(problem_seq):
         print(
-            f"[nanonets] problem-count mismatch: {len(problem_seq)} problem(s) from "
+            f"[{engine}] problem-count mismatch: {len(problem_seq)} problem(s) from "
             f"text vs {len(starts)} from DETR layout; figure assignment may drift"
         )
     for pic in pics:
@@ -511,6 +515,7 @@ def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=N
     rung; when empty the masking rung is skipped (e.g. answer pages with no
     detection pass).
     """
+    engine = getattr(client, "name", "ocr")
     if config.PRINT_TIME:
         from datetime import datetime
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Parsing page {cache_key or 'unknown'}...")
@@ -529,7 +534,7 @@ def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=N
     temps = [base_temp] + [t for t in config.NANONETS_RETRY_TEMPS if t > base_temp]
     for i, temp in enumerate(temps):
         if i:
-            print(f"[nanonets] runaway; retrying at temperature {temp}")
+            print(f"[{engine}] runaway; retrying at temperature {temp}")
         if config.PRINT_TIME:
             from datetime import datetime
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Calling OCR for page {cache_key or 'unknown'} (temp={temp})...")
@@ -538,7 +543,7 @@ def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=N
             break
     else:
         if mask_boxes:
-            print("[nanonets] runaway persists; masking figures and re-OCRing")
+            print(f"[{engine}] runaway persists; masking figures and re-OCRing")
             if config.PRINT_TIME:
                 from datetime import datetime
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Calling OCR for page {cache_key or 'unknown'} (masking figures)...")
@@ -555,7 +560,7 @@ def _figure_mask_boxes(detections):
     return [d["box"] for d in detections if d["label"] in config.IMAGE_LABELS]
 
 
-def process_image_nanonets(
+def process_image_markdown(
     image_path,
     client,
     threshold=config.NANONETS_DETECT_THRESHOLD,
@@ -583,9 +588,10 @@ def process_image_nanonets(
     first problem to that problem instead of dropping them (see process_test).
     """
     layout = layout or config.LayoutOptions()
-    print("[nanonets] Starting pipeline...")
+    engine = getattr(client, "name", "ocr")
+    print(f"[{engine}] Starting pipeline...")
     image = Image.open(image_path).convert("RGB")
-    print("[nanonets] Running layout detection (DETR)...")
+    print(f"[{engine}] Running layout detection (DETR)...")
     # Faint printed figures score below the text threshold, so a series can ask
     # for Picture/Table boxes at a lower confidence (picture_detect_threshold)
     # than the text used for problem-start geometry. Scan once at the lower of
@@ -616,8 +622,8 @@ def process_image_nanonets(
             if d["label"] in config.TEXT_LABELS
             and d["score"] >= config.EQUATION_TEXT_MIN_SCORE
         ]
-    print("[nanonets] Layout detection done.")
-    print("[nanonets] Running whole-page OCR (Nanonets)...")
+    print(f"[{engine}] Layout detection done.")
+    print(f"[{engine}] Running whole-page OCR...")
     markdown = _ocr_page(
         client,
         image,
@@ -629,7 +635,7 @@ def process_image_nanonets(
         # blank the whole page on the masking rung.
         mask_boxes=_figure_mask_boxes(detections),
     )
-    print("[nanonets] Nanonets OCR done.")
+    print(f"[{engine}] Whole-page OCR done.")
     items = nanonets_mod.parse_layout(
         markdown,
         match_marker,
@@ -638,7 +644,7 @@ def process_image_nanonets(
         ordered_list_markers=layout.ordered_list_markers,
     )
 
-    print("[nanonets] Assembling problems...")
+    print(f"[{engine}] Assembling problems...")
     problems = {}  # number -> Problem, insertion-ordered (numbers increase)
     problem_seq = []  # problem numbers in reading order
 
@@ -676,7 +682,8 @@ def process_image_nanonets(
     # above the first start still goes to carry (handled inside _assign_pictures).
     geom_seq = [n for n in problem_seq if n != carry]
     groups = _assign_pictures(
-        assign_detections, image, geom_seq, layout, items, carry, equation_text_boxes
+        assign_detections, image, geom_seq, layout, items, carry, equation_text_boxes,
+        engine=engine,
     )
     for number in sorted(groups):
         prob = problem_for(number)
@@ -686,7 +693,7 @@ def process_image_nanonets(
                 ProblemElement("image", "Picture", box, crop=image.crop(tuple(box)))
             )
 
-    print("[nanonets] Problem assembly done.")
+    print(f"[{engine}] Problem assembly done.")
     return [problems[n] for n in sorted(problems)], detections, groups
 
 
@@ -696,8 +703,9 @@ def process_test(page_paths, engine, model, threshold=None, match=None, cache=No
     A test (e.g. a USAMTS PDF rendered to page PNGs) may span several pages, with
     a single problem's statement and figures split across them. Each page is run
     through the chosen engine, then problems sharing a number are merged (their
-    elements concatenated in page order). `engine` is "nanonets" or "mlx"; `model`
-    is the matching NanonetsClient / OCRModel. `match` is the series-specific
+    elements concatenated in page order). `engine` is a whole-page-markdown
+    engine (config.MARKDOWN_ENGINES: "nanonets" / "llama") or "mlx"; `model` is
+    the matching client (NanonetsClient / LlamaClient / OCRModel). `match` is the series-specific
     marker matcher. `cache` is an optional OCRCache for the nanonets whole-page OCR
     (ignored by the mlx engine, which OCRs per crop). `layout` is the series'
     LayoutOptions (nanonets only). Returns the merged [Problem], number-sorted.
@@ -705,14 +713,14 @@ def process_test(page_paths, engine, model, threshold=None, match=None, cache=No
     For the nanonets engine the highest problem number seen so far is carried into
     the next page (`carry`) so that page's leading text and any figure sitting
     above its first problem attach to the problem continued from the previous page
-    instead of being dropped (see process_image_nanonets / _assign_pictures).
+    instead of being dropped (see process_image_markdown / _assign_pictures).
     """
     merged = {}  # number -> Problem
     carry = None  # nanonets: problem in progress at the top of the next page
     for path in page_paths:
-        if engine == "nanonets":
+        if engine in config.MARKDOWN_ENGINES:
             thr = threshold if threshold is not None else config.NANONETS_DETECT_THRESHOLD
-            problems, _, _ = process_image_nanonets(
+            problems, _, _ = process_image_markdown(
                 path, model, thr, match_marker=match, cache=cache, layout=layout, carry=carry
             )
             page_numbers = [p.number for p in problems]
@@ -1132,7 +1140,7 @@ def inline_problem_figures(problems, path_prefix=""):
     of the "where does this figure go" signal: the DETR crops (the image elements
     on each `Problem`, in vertical order, which `write_problems` saves as
     ``problem_<n>_image_<k>.png``) and the reading-order `FIGURE_PLACEHOLDER`
-    sentinels `process_image_nanonets` left in the text when the series set
+    sentinels `process_image_markdown` left in the text when the series set
     `LayoutOptions.inline_figures`. Each `Problem`'s text elements are collapsed
     into one whose text carries a ``![](<path_prefix>problem_<n>_image_<k>.png)``
     ref (a path rooted at the output dir) for every figure; the image elements

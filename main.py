@@ -28,6 +28,7 @@ from pathlib import Path
 
 from src import config, output
 from src.annotate import draw_detections
+from src.llama import LlamaClient
 from src.nanonets import NanonetsClient
 from src.ocr import OCRModel
 from src.ocr_cache import PARSE_CACHE, SOLUTION_CACHE, OCRCache
@@ -37,7 +38,7 @@ from src.pipeline import (
     inline_solution_figures,
     ocr_pages,
     process_image,
-    process_image_nanonets,
+    process_image_markdown,
     process_solution_document,
     process_test,
 )
@@ -57,9 +58,17 @@ def _print_problems(problems):
                 print(f"[{el.label} image (no crop): {el.text}]")
 
 
-def _open_engine(engine):
-    """Construct the engine's model/client once (reused across a whole batch)."""
-    return NanonetsClient() if engine == "nanonets" else OCRModel()
+def _open_engine(engine, llama_tier=None):
+    """Construct the engine's model/client once (reused across a whole batch).
+
+    `llama_tier` overrides config.LLAMA_TIER for the llama engine (the CLI
+    ``--llama-tier`` flag); ignored by the other engines.
+    """
+    if engine == "nanonets":
+        return NanonetsClient()
+    if engine == "llama":
+        return LlamaClient(tier=llama_tier or config.LLAMA_TIER)
+    return OCRModel()
 
 
 def _close_engine(engine, model):
@@ -160,7 +169,7 @@ def _run_parse_batch(series, tests, args):
         return
 
     layout = _resolve_layout(series, args)
-    model = _open_engine(args.engine)
+    model = _open_engine(args.engine, args.llama_tier)
     try:
         for test in tests:
             dest = out_root / test.id
@@ -197,7 +206,7 @@ def cmd_parse_series(args):
 
 def _cmd_parse_single(args):
     """Legacy single-page parse: flat output to --out, supports --debug overlay."""
-    if args.engine == "nanonets":
+    if args.engine in config.MARKDOWN_ENGINES:
         threshold = (
             args.threshold if args.threshold is not None else config.NANONETS_DETECT_THRESHOLD
         )
@@ -206,8 +215,14 @@ def _cmd_parse_single(args):
             if args.temp is not None
             else None
         )
-        problems, detections, groups = process_image_nanonets(
-            args.image, NanonetsClient(), threshold, layout=layout
+        # --cache reuses the whole-page OCR across runs (keyed by image filename),
+        # so repeated single-page parses don't re-hit a paid/slow endpoint -- the
+        # same OCRCache the batch/solution paths use, here rooted at --out. DETR
+        # still re-runs every time.
+        cache = OCRCache(Path(args.out) / PARSE_CACHE, enabled=args.cache)
+        problems, detections, groups = process_image_markdown(
+            args.image, _open_engine(args.engine, args.llama_tier), threshold,
+            cache=cache, layout=layout
         )
         ocr = None
     else:
@@ -263,7 +278,7 @@ def cmd_solutions(args):
     if not tests:
         return
 
-    model = _open_engine(args.engine)
+    model = _open_engine(args.engine, args.llama_tier)
     try:
         for test in tests:
             dest = out_root / test.id
@@ -296,7 +311,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
     pages_md = None
     with tempfile.TemporaryDirectory(prefix="comp-ocr-sol-") as workdir:
         pages = series.test_pages(Test(id=test.id, source=sol), workdir)
-        if args.engine == "nanonets":
+        if args.engine in config.MARKDOWN_ENGINES:
             pages_md, figures = process_solution_document(
                 pages,
                 model,
@@ -360,8 +375,8 @@ def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, so
         if src is None:
             print(f"[{series.name}] skip {test.id} answers (no answer source found)")
             return
-        if args.engine != "nanonets":
-            print(f"[{series.name}] skip {test.id} answers (need the nanonets engine)")
+        if args.engine not in config.MARKDOWN_ENGINES:
+            print(f"[{series.name}] skip {test.id} answers (need a markdown engine)")
             return
         if sol_pages_md is not None and src == sol:
             pages_md = sol_pages_md
@@ -490,7 +505,7 @@ def cmd_pdf(args):
 def _add_engine_args(p):
     p.add_argument(
         "--engine",
-        choices=["nanonets", "mlx"],
+        choices=["nanonets", "llama", "mlx"],
         default=config.DEFAULT_ENGINE,
         help="parsing engine (default: %(default)s)",
     )
@@ -499,6 +514,13 @@ def _add_engine_args(p):
         type=float,
         default=None,
         help="DETR detection confidence (default: engine-specific)",
+    )
+    p.add_argument(
+        "--llama-tier",
+        choices=list(config.LLAMA_TIERS),
+        default=None,
+        help="LlamaCloud parsing tier for --engine llama, quality/cost ascending "
+        f"(default: {config.LLAMA_TIER}). Ignored by other engines.",
     )
     p.add_argument(
         "--temp",

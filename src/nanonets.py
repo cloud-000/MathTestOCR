@@ -299,6 +299,8 @@ def _select_model(ids):
 class NanonetsClient:
     """Wrapper around the OpenAI-compatible Nanonets-OCR endpoint."""
 
+    name = "nanonets"  # engine label for the shared pipeline's logging
+
     def __init__(
         self, base_url: str = config.NANONETS_BASE_URL, model=config.NANONETS_MODEL
     ):

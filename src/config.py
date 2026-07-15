@@ -3,14 +3,31 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load the project's local .env (gitignored) into the process environment before
+# anything reads it -- notably the llama engine's API key, which the llama_cloud
+# SDK picks up from LLAMA_CLOUD_API_KEY / LLAMA_PARSE_API_KEY. Explicit path so it
+# resolves regardless of the working directory; missing file is a silent no-op.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 # --- Models ---
 LAYOUT_MODEL = "docling-project/docling-layout-heron"
 OCR_MODEL = "mlx-community/gemma-4-E4B-it-qat-4bit"  # MLX engine (legacy path)
 
 # --- Engines ---
 # "nanonets": whole-page OCR via the local OpenAI-compatible endpoint (default).
+# "llama": whole-page OCR via the hosted LlamaCloud parsing API.
 # "mlx": the per-crop Gemma OCR + anchor/grouping pipeline.
 DEFAULT_ENGINE = "nanonets"
+
+# Engines that return whole-page, problem-segmented markdown and so drive the
+# shared nanonets pipeline (pipeline.process_image_markdown and friends), as
+# opposed to the mlx per-crop detect->OCR->group path. Their clients are
+# interchangeable: each exposes parse_page(image, temperature, mask_boxes) ->
+# (markdown, runaway). Adding a new markdown OCR engine is: implement that
+# contract and list it here.
+MARKDOWN_ENGINES = ("nanonets", "llama")
 
 # --- Nanonets engine (OpenAI-compatible endpoint) ---
 NANONETS_BASE_URL = "http://127.0.0.1:8080/v1"
@@ -112,6 +129,45 @@ NANONETS_LOOP_MIN_PERIOD = 80
 NANONETS_LOOP_MAX_PERIOD = 1600
 NANONETS_LOOP_MIN_REPEATS = 6
 NANONETS_LOOP_MATCH = 0.9
+
+# --- Llama engine (hosted LlamaCloud parsing API) ---
+# Selected with `--engine llama`: a cloud alternative to the local nanonets
+# endpoint. Like nanonets it returns whole-page, problem-segmented markdown, so
+# it flows through the same pipeline (DETR still supplies the figure crops; all
+# segmentation stays deterministic geometry). Requires a LlamaCloud API key --
+# set it in the LLAMA_CLOUD_API_KEY (or LLAMA_PARSE_API_KEY) environment
+# variable, or pin it here (None -> read from the environment).
+LLAMA_CLOUD_API_KEY = None
+# Parsing tier: quality/cost climbs "fast" < "cost_effective" < "agentic" <
+# "agentic_plus". "cost_effective" is the default; step up to "agentic" for
+# dense competition-math layout (LaTeX, tables, inset figures) that needs it.
+# Override per-run with --llama-tier.
+LLAMA_TIER = "cost_effective"
+# Allowed tiers, in ascending quality/cost (the llama_cloud parse API's values).
+# Shared by the --llama-tier CLI choices.
+LLAMA_TIERS = ("fast", "cost_effective", "agentic", "agentic_plus")
+# Parsing model release to pin; "latest" tracks the newest. Pin a dated version
+# (e.g. "2026-01-08") for reproducible output across a batch.
+LLAMA_VERSION = "latest"
+# Custom parsing instructions sent to the AI parser (the parse API's
+# agentic_options.custom_prompt). Only the non-fast tiers honor it. Its job is to
+# make LlamaCloud mark each figure inline the same way nanonets does -- an
+# <img>...</img> tag at the figure's reading-order position -- so the existing,
+# engine-agnostic markdown parser (nanonets.parse_layout / FIGURE_PLACEHOLDER)
+# picks the markers up unchanged and DETR still supplies the actual crops. Set to
+# None/"" to send no custom prompt. Changing this invalidates cached pages parsed
+# under the old prompt (the cache keys on page filename, not prompt), so clear
+# the cache (delete the ocr_cache*.json) after editing it.
+LLAMA_PROMPT = (
+    "Transcribe this page as markdown in natural reading order. Return equations "
+    "in LaTeX and tables in HTML. Wherever a figure, diagram, chart, or geometric "
+    "illustration appears, insert an <img></img> tag at that exact position in the "
+    "text, with a short description of it inside the tag (for example: <img>a right "
+    "triangle with legs 3 and 4</img>). This tag marks where the image belongs so "
+    "it can be matched to its cropped picture; do NOT embed the image itself or a "
+    "base64 data URI. Transcribe only what is printed on the page; add no "
+    "commentary of your own."
+)
 
 # --- Answer-extraction LLM (deterministic-marker fallback) ---
 # A series' parse_answers keys the answer off a printed marker ("Answer:", a
@@ -222,7 +278,7 @@ class LayoutOptions:
     pages (dense answer-blank tables, faint inset figures, and a recurring
     whole-page false-positive Picture box) opt into the extra heuristics via
     ``MathcountsSeries.layout_options``. Threaded from the CLI through
-    ``process_test`` / ``process_image_nanonets`` so a series' quirks stay in the
+    ``process_test`` / ``process_image_markdown`` so a series' quirks stay in the
     series, not baked into the shared pipeline (mirrors ``match_marker`` /
     ``skip_page``).
     """
