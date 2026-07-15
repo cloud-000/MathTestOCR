@@ -91,6 +91,12 @@ class HmmtSeries(Series):
         Older HMIC documents put the solution directly after ``Answer:``;
         newer documents add ``Proposed by:`` and ``Solution:`` labels. Figure
         placeholders are retained so DETR crops remain inline.
+
+        A Guts round is a special case: its "solutions" document is really an
+        answer key -- every block is a bare answer, not a worked solution -- so
+        those entries are dropped here (they live only in ``problem_answer.json``
+        via `_bare_answer`). This is detected document-wide, never per-problem,
+        so a normal round's occasional short one-line solution is still kept.
         """
         grouped: dict[int, list[str]] = {}
         for item in parse_layout(full_text, self.match_marker()):
@@ -98,7 +104,12 @@ class HmmtSeries(Series):
                 continue
             value = item["text"] if item["kind"] == "text" else FIGURE_PLACEHOLDER
             grouped.setdefault(item["problem"], []).append(value)
-        return {number: _solution_body("\n".join(parts)) for number, parts in grouped.items()}
+        bodies = {n: _solution_body("\n".join(parts)) for n, parts in grouped.items()}
+        nonempty = [b for b in bodies.values() if b]
+        bare = [b for b in nonempty if _bare_answer(b)]
+        if nonempty and len(bare) >= _ANSWER_KEY_BARE_FRAC * len(nonempty):
+            return {n: b for n, b in bodies.items() if b and not _bare_answer(b)}
+        return bodies
 
     @override
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:
@@ -193,6 +204,10 @@ def _boxed_answer(block: str) -> str:
 # short line. A real (prose) solution spans multiple lines or runs long, so
 # those are left to the answer LLM instead of being mistaken for the answer.
 _BARE_ANSWER_MAX_LEN = 80
+# A document is treated as a Guts-style answer key (bare answers, no solutions)
+# only when this fraction of its non-empty blocks are bare -- so one short
+# solution in an otherwise-worked round never trips it.
+_ANSWER_KEY_BARE_FRAC = 0.8
 
 
 def _bare_answer(block: str) -> str:
