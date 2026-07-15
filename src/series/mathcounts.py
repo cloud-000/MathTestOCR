@@ -61,9 +61,11 @@ _SKIP_PAGE_PHRASES = ("do not begin until you are instructed", "forms of answers
 
 class MathcountsSeries(Series):
     name = "mathcounts"
-    has_solutions = False  # shared per-level solutions.pdf deferred -- see module docstring
+    has_solutions = (
+        False  # shared per-level solutions.pdf deferred -- see module docstring
+    )
     has_answers = True
-    ignored_test_substrings = ("masters",)
+    ignored_test_substrings = ("masters", "warmup", "workout")
 
     def layout_options(self):
         """Opt into the MATHCOUNTS-tuned nanonets figure/table heuristics.
@@ -119,13 +121,48 @@ class MathcountsSeries(Series):
         occurrence of a number wins.
         """
         header = _ANSWER_ROUND_HEADERS[test.source.stem]
+        
+        # Compile regexes for all potential round headers to segment pages
+        # that compile multiple rounds onto a single sheet (e.g. 2001 school).
+        all_headers = list(set(_ANSWER_ROUND_HEADERS.values()))
+        header_patterns = [
+            (h, re.compile(re.escape(h).replace(r"\ ", r"\s+"), re.IGNORECASE))
+            for h in all_headers
+        ]
+
         pages = [
-            md for md in pages_markdown
-            if header in re.sub(r"\s+", " ", md).lower()
+            md for md in pages_markdown if header in re.sub(r"\s+", " ", md).lower()
         ]
         answers = {}
         for markdown in pages:
-            for line in markdown.splitlines():
+            # Find all round header occurrences on this page
+            matches = []
+            for h, pattern in header_patterns:
+                for match in pattern.finditer(markdown):
+                    matches.append((match.start(), match.end(), h))
+            matches.sort()
+
+            # Find the match for our target header. If found, we restrict the
+            # text to run from our header until the next different round header.
+            target_match_idx = -1
+            for idx, (_, _, h) in enumerate(matches):
+                if h == header:
+                    target_match_idx = idx
+                    break
+
+            if target_match_idx != -1:
+                start_idx = matches[target_match_idx][0]
+                end_idx = len(markdown)
+                for idx in range(target_match_idx + 1, len(matches)):
+                    _, _, next_h = matches[idx]
+                    if next_h != header:
+                        end_idx = matches[idx][0]
+                        break
+                section = markdown[start_idx:end_idx]
+            else:
+                section = markdown
+
+            for line in section.splitlines():
                 _, pairs = numbered_answers_in_line(line)
                 for n, answer in pairs:
                     if answer:
