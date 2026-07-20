@@ -33,8 +33,9 @@ _model = None
 def _ensure_loaded():
     global _processor, _model
     if _model is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         _processor = RTDetrImageProcessor.from_pretrained(config.LAYOUT_MODEL)
-        _model = RTDetrV2ForObjectDetection.from_pretrained(config.LAYOUT_MODEL)
+        _model = RTDetrV2ForObjectDetection.from_pretrained(config.LAYOUT_MODEL).to(device)
     return _processor, _model
 
 
@@ -46,13 +47,15 @@ def detect(image: Image.Image, threshold: float = config.DETECT_THRESHOLD):
     processor, model = _ensure_loaded()
     image = image.convert("RGB")
 
+    device = next(model.parameters()).device
     inputs = processor(images=[image], return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
         outputs = model(**inputs)
 
     results = processor.post_process_object_detection(
         outputs,
-        target_sizes=torch.tensor([image.size[::-1]]),  # pyright: ignore[reportArgumentType]
+        target_sizes=torch.tensor([image.size[::-1]], device=device),  # pyright: ignore[reportArgumentType]
         threshold=threshold,
     )
 

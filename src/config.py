@@ -438,6 +438,8 @@ DEFAULT_OUT_DIR = "out"
 # the CLI. Leave a series out (or None) to require --data-dir explicitly. These
 # are external paths specific to the user's machine; override on the CLI anytime.
 _MATHTESTS_ROOT = Path("/Users/cloud/MathTests")
+if not _MATHTESTS_ROOT.exists():
+    _MATHTESTS_ROOT = Path(".")
 SERIES_DATA_DIRS = {
     "usamts": _MATHTESTS_ROOT / "USAMTS" / "out",
     "purplecomet": _MATHTESTS_ROOT / "PurpleComet" / "out",
