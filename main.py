@@ -234,7 +234,7 @@ def _run_parse_batch(series, tests, args):
     try:
         for test in tests:
             dest = out_root / test.id
-            if dest.exists() and not args.force:
+            if (dest / "problems.json").exists() and not args.force:
                 log(f"[{series.name}] skip {test.id} (already parsed; --force to redo)")
                 continue
             log(f"[{series.name}] parsing {test.id} ...")
@@ -364,7 +364,12 @@ def _scrape_solutions(args, series, test, sol, dest, model):
     answer key (see Series.answer_source) can be parsed without re-OCR; None
     when the test was skipped or the mlx engine (no whole-page markdown) ran.
     """
-    if (dest / "problem_solution.json").exists() and not args.force:
+    has_existing_solution = (
+        (dest / "problem_solution.json").exists()
+        or (dest / "solutions.json").exists()
+        or (dest / "problem_answer.json").exists()
+    )
+    if has_existing_solution and not args.force:
         log(f"[{series.name}] skip {test.id} solutions (exist; --force to redo)")
         return None
     log(f"[{series.name}] scraping solutions for {test.id} ...")
@@ -427,7 +432,12 @@ def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, so
     OCRs `answer_source` and hands the pages to `parse_answers`. When the key
     lives inside the solution document just OCR'd, its markdown is reused.
     """
-    if (dest / "problem_answer.json").exists() and not args.force:
+    has_existing_answer = (
+        (dest / "problem_answer.json").exists()
+        or (dest / "problem_solution.json").exists()
+        or (dest / "solutions.json").exists()
+    )
+    if has_existing_answer and not args.force:
         log(f"[{series.name}] skip {test.id} answers (exist; --force to redo)")
         return
     answers = series.scrape_answers(test)
