@@ -19,10 +19,70 @@ import hashlib
 import os
 import shutil
 import statistics
+import sys
 import tempfile
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageMath, PngImagePlugin
+
+
+class SummaryTracker:
+    def __init__(self):
+        self.enabled = False
+        self.events = []
+        self._stdout = None
+        self._stderr = None
+        self._devnull = None
+
+    def start(self, enabled=True):
+        self.enabled = enabled
+        self.events = []
+        if self.enabled:
+            self._stdout = sys.stdout
+            self._stderr = sys.stderr
+            self._devnull = open(os.devnull, "w")
+            sys.stdout = self._devnull
+            sys.stderr = self._devnull
+
+    def log(self, msg=""):
+        msg_str = str(msg)
+        if self.enabled:
+            self.events.append(msg_str)
+        else:
+            print(msg_str)
+
+    def stop(self, status=None):
+        if not self.enabled:
+            return
+        if self._devnull is not None:
+            sys.stdout = self._stdout
+            sys.stderr = self._stderr
+            self._devnull.close()
+            self._devnull = None
+
+        self._print_summary(status)
+        self.enabled = False
+
+    def _print_summary(self, status=None):
+        if status:
+            header = f"\nSummary of completed work ({status}):"
+        else:
+            header = "\nSummary of completed work:"
+        print(header)
+        if not self.events:
+            print("  (no actions performed)")
+        else:
+            for item in self.events:
+                for line in item.splitlines():
+                    if line.strip():
+                        print(f"  {line}")
+
+
+_tracker = SummaryTracker()
+
+
+def log(msg=""):
+    _tracker.log(msg)
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
@@ -220,7 +280,7 @@ def export(
     dest = dest.expanduser()
     jobs, expected, missing = _build_jobs(sources, dest, preserve_background)
     for source_root in missing:
-        print(f"! skipping missing source: {source_root}")
+        log(f"! skipping missing source: {source_root}")
 
     stats = {"processed": 0, "copied": 0, "skipped": 0, "failed": 0, "orphans": 0}
     for source, target in jobs:
@@ -230,7 +290,7 @@ def export(
                     stats["skipped"] += 1
                     continue
                 if dry_run:
-                    print(f"{'MOVE' if move else 'COPY'} {source} -> {target}")
+                    log(f"{'MOVE' if move else 'COPY'} {source} -> {target}")
                 else:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     (shutil.move if move else shutil.copy2)(str(source), str(target))
@@ -243,7 +303,7 @@ def export(
                 continue
             if dry_run:
                 action = "PROCESS+MOVE" if move else "PROCESS"
-                print(f"{action} {source} -> {target}")
+                log(f"{action} {source} -> {target}")
             else:
                 _save_processed(source, target, source_hash)
                 if move:
@@ -251,34 +311,34 @@ def export(
             stats["processed"] += 1
         except Exception as exc:  # Keep a large batch going and report every bad file.
             stats["failed"] += 1
-            print(f"! failed {source}: {exc}")
+            log(f"! failed {source}: {exc}")
 
     verb = "would " if dry_run else ""
-    print(
-        f"\n{verb}processed {stats['processed']}, copied {stats['copied']}, "
+    log(
+        f"{verb}processed {stats['processed']}, copied {stats['copied']}, "
         f"skipped {stats['skipped']}, failed {stats['failed']} image(s) -> {dest}"
     )
 
     orphans = sorted(p for p in _images(dest) if p not in expected) if dest.is_dir() else []
     stats["orphans"] = len(orphans)
     if orphans:
-        print(
-            f"\n{len(orphans)} image(s) in {dest} are NOT in the current source "
+        log(
+            f"{len(orphans)} image(s) in {dest} are NOT in the current source "
             "(dropped/renamed since a previous export):"
         )
         for path in orphans:
-            print(f"  {path.relative_to(dest)}")
+            log(f"  {path.relative_to(dest)}")
         if prune:
             for path in orphans:
                 if dry_run:
-                    print(f"DELETE {path}")
+                    log(f"DELETE {path}")
                 else:
                     path.unlink()
-            print(f"\n{verb}deleted {len(orphans)} orphan(s).")
+            log(f"{verb}deleted {len(orphans)} orphan(s).")
         else:
-            print("\n(re-run with --prune to delete these; --prune --dry-run to preview)")
+            log("(re-run with --prune to delete these; --prune --dry-run to preview)")
     else:
-        print("\nNo orphans: every image in dest is still produced by the source.")
+        log("No orphans: every image in dest is still produced by the source.")
     return stats
 
 
@@ -301,7 +361,15 @@ def main(argv=None):
         action="store_true",
         help="copy images unchanged instead of producing transparent PNGs",
     )
+    parser.add_argument(
+        "--no-print",
+        action="store_true",
+        help="suppress live output and only print a summary of completed work upon exit or interrupt",
+    )
     args = parser.parse_args(argv)
+
+    no_print = getattr(args, "no_print", False) or (argv is None and "--no-print" in sys.argv)
+    _tracker.start(enabled=no_print)
     try:
         export(
             [Path(source) for source in args.sources],
@@ -313,7 +381,16 @@ def main(argv=None):
             force=args.force,
         )
     except ExportCollisionError as exc:
+        _tracker.stop(status="error")
         parser.error(str(exc))
+    except KeyboardInterrupt:
+        _tracker.stop(status="interrupted")
+        sys.exit(130)
+    except Exception as exc:
+        _tracker.stop(status=f"error: {exc}")
+        raise
+    else:
+        _tracker.stop()
 
 
 if __name__ == "__main__":

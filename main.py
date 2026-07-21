@@ -22,6 +22,8 @@ Examples:
 
 import argparse
 import json
+import os
+import sys
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -43,6 +45,65 @@ from src.pipeline import (
     process_test,
 )
 from src.series import GenericSeries, Test, get_series, series_names
+
+
+class SummaryTracker:
+    def __init__(self):
+        self.enabled = False
+        self.events = []
+        self._stdout = None
+        self._stderr = None
+        self._devnull = None
+
+    def start(self, enabled=True):
+        self.enabled = enabled
+        self.events = []
+        if self.enabled:
+            self._stdout = sys.stdout
+            self._stderr = sys.stderr
+            self._devnull = open(os.devnull, "w")
+            sys.stdout = self._devnull
+            sys.stderr = self._devnull
+
+    def log(self, msg=""):
+        msg_str = str(msg)
+        if self.enabled:
+            self.events.append(msg_str)
+        else:
+            print(msg_str)
+
+    def stop(self, status=None):
+        if not self.enabled:
+            return
+        if self._devnull is not None:
+            sys.stdout = self._stdout
+            sys.stderr = self._stderr
+            self._devnull.close()
+            self._devnull = None
+
+        self._print_summary(status)
+        self.enabled = False
+
+    def _print_summary(self, status=None):
+        if status:
+            header = f"\nSummary of completed work ({status}):"
+        else:
+            header = "\nSummary of completed work:"
+        print(header)
+        if not self.events:
+            print("  (no actions performed)")
+        else:
+            for item in self.events:
+                for line in item.splitlines():
+                    if line.strip():
+                        print(f"  {line}")
+
+
+_tracker = SummaryTracker()
+
+
+def log(msg=""):
+    _tracker.log(msg)
 
 
 def _print_problems(problems):
@@ -107,7 +168,7 @@ def _exclude_ignored_tests(series, tests):
         (ignored if series.ignore_test(test) else kept).append(test)
     if ignored:
         ids = ", ".join(test.id for test in ignored)
-        print(f"[{series.name}] ignored {len(ignored)} test(s): {ids}")
+        log(f"[{series.name}] ignored {len(ignored)} test(s): {ids}")
     return kept
 
 
@@ -120,7 +181,7 @@ def _filter_existing(series, tests, out_root, existing):
     if not existing:
         return tests
     selected = [t for t in tests if (Path(out_root) / t.id).is_dir()]
-    print(f"[{series.name}] --existing: {len(selected)} of {len(tests)} test(s) present in {out_root}")
+    log(f"[{series.name}] --existing: {len(selected)} of {len(tests)} test(s) present in {out_root}")
     return selected
 
 
@@ -153,7 +214,7 @@ def _cmd_parse_batch(args):
     series = get_series(args.series)
     data_dir = _resolve_data_dir(series, args.data_dir)
     tests = series.discover_tests(data_dir)
-    print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
+    log(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
     tests = _exclude_ignored_tests(series, tests)
     tests = _select_tests(series, tests, args.test)
     _run_parse_batch(series, tests, args)
@@ -174,9 +235,9 @@ def _run_parse_batch(series, tests, args):
         for test in tests:
             dest = out_root / test.id
             if dest.exists() and not args.force:
-                print(f"[{series.name}] skip {test.id} (already parsed; --force to redo)")
+                log(f"[{series.name}] skip {test.id} (already parsed; --force to redo)")
                 continue
-            print(f"[{series.name}] parsing {test.id} ...")
+            log(f"[{series.name}] parsing {test.id} ...")
             cache = OCRCache(dest / PARSE_CACHE, enabled=args.cache)
             problems = _parse_one_test(
                 series, test, args.engine, model, args.threshold, cache=cache, layout=layout
@@ -188,7 +249,7 @@ def _run_parse_batch(series, tests, args):
             # append at the end -- both handled by _place_figure_refs.
             inline_problem_figures(problems, f"{series.name}/{test.id}/")
             n = output.write_problems(problems, dest)
-            print(f"[{series.name}] wrote {n} problem(s) -> {dest}")
+            log(f"[{series.name}] wrote {n} problem(s) -> {dest}")
     finally:
         _close_engine(args.engine, model)
 
@@ -200,7 +261,7 @@ def cmd_parse_series(args):
         tests = series.discover_source(args.source, args.test_name)
     except (FileNotFoundError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
-    print(f"[{series.name}] discovered {len(tests)} test(s) in {args.source}")
+    log(f"[{series.name}] discovered {len(tests)} test(s) in {args.source}")
     _run_parse_batch(series, tests, args)
 
 
@@ -239,10 +300,10 @@ def _cmd_parse_single(args):
         img = Image.open(args.image).convert("RGB")
         out = debug_dir / f"{Path(args.image).stem}_annotated.png"
         draw_detections(img, detections, groups).save(out)
-        print(f"\n[debug overlay -> {out}]")
+        log(f"[debug overlay -> {out}]")
 
     n = output.write_problems(problems, args.out)
-    print(f"\n[wrote {n} problem(s) -> {args.out}]")
+    log(f"[wrote {n} problem(s) -> {args.out}]")
 
     if ocr is not None:
         ocr.unload()
@@ -263,7 +324,7 @@ def cmd_solutions(args):
     """Scrape per-problem solutions (text + figure crops) and/or answer keys."""
     series = get_series(args.series)
     if not (series.has_solutions or series.has_answers):
-        print(
+        log(
             f"[{series.name}] has no solutions or answers (not yet supported); nothing to do"
         )
         return
@@ -271,7 +332,7 @@ def cmd_solutions(args):
     out_root = Path(args.out) / series.name
 
     tests = series.discover_tests(data_dir)
-    print(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
+    log(f"[{series.name}] discovered {len(tests)} test(s) in {data_dir}")
     tests = _exclude_ignored_tests(series, tests)
     tests = _select_tests(series, tests, args.test)
     tests = _filter_existing(series, tests, out_root, args.existing)
@@ -285,7 +346,7 @@ def cmd_solutions(args):
             sol = series.solution_source(test) if series.has_solutions else None
             pages_md = None
             if series.has_solutions and sol is None:
-                print(f"[{series.name}] skip {test.id} (no solution source found)")
+                log(f"[{series.name}] skip {test.id} (no solution source found)")
             if sol is not None:
                 pages_md = _scrape_solutions(args, series, test, sol, dest, model)
             if series.has_answers:
@@ -304,9 +365,9 @@ def _scrape_solutions(args, series, test, sol, dest, model):
     when the test was skipped or the mlx engine (no whole-page markdown) ran.
     """
     if (dest / "problem_solution.json").exists() and not args.force:
-        print(f"[{series.name}] skip {test.id} solutions (exist; --force to redo)")
+        log(f"[{series.name}] skip {test.id} solutions (exist; --force to redo)")
         return None
-    print(f"[{series.name}] scraping solutions for {test.id} ...")
+    log(f"[{series.name}] scraping solutions for {test.id} ...")
     cache = OCRCache(dest / SOLUTION_CACHE, enabled=args.cache)
     pages_md = None
     with tempfile.TemporaryDirectory(prefix="comp-ocr-sol-") as workdir:
@@ -355,7 +416,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
     solutions = inline_solution_figures(solutions, figures, path_prefix)
     n = output.write_solutions(solutions, dest)
     k = output.write_solution_images(figures, dest)
-    print(f"[{series.name}] wrote {n} solution(s), {k} figure crop(s) -> {dest}")
+    log(f"[{series.name}] wrote {n} solution(s), {k} figure crop(s) -> {dest}")
     return pages_md
 
 
@@ -367,16 +428,16 @@ def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, so
     lives inside the solution document just OCR'd, its markdown is reused.
     """
     if (dest / "problem_answer.json").exists() and not args.force:
-        print(f"[{series.name}] skip {test.id} answers (exist; --force to redo)")
+        log(f"[{series.name}] skip {test.id} answers (exist; --force to redo)")
         return
     answers = series.scrape_answers(test)
     if not answers:
         src = series.answer_source(test)
         if src is None:
-            print(f"[{series.name}] skip {test.id} answers (no answer source found)")
+            log(f"[{series.name}] skip {test.id} answers (no answer source found)")
             return
         if args.engine not in config.MARKDOWN_ENGINES:
-            print(f"[{series.name}] skip {test.id} answers (need a markdown engine)")
+            log(f"[{series.name}] skip {test.id} answers (need a markdown engine)")
             return
         if sol_pages_md is not None and src == sol:
             pages_md = sol_pages_md
@@ -395,10 +456,10 @@ def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, so
                 pages_md = ocr_pages(pages, model, cache=cache, layout=_resolve_layout(series, args))
         answers = series.parse_answers(test, pages_md)
     if not answers:
-        print(f"[{series.name}] skip {test.id} (no answers found)")
+        log(f"[{series.name}] skip {test.id} (no answers found)")
         return
     n = output.write_solutions(answers, dest, suffix="answer")
-    print(f"[{series.name}] wrote {n} answer(s) -> {dest}")
+    log(f"[{series.name}] wrote {n} answer(s) -> {dest}")
 
 
 def _answer_cache_path(out_root, data_dir, src):
@@ -457,7 +518,7 @@ def cmd_dedup(args):
             texts[ref] = text
 
     if scoped_tests == 0:
-        print(
+        log(
             f"[{series.name}] no parsed test defines a duplicate_scope; "
             "nothing to compare"
         )
@@ -491,7 +552,7 @@ def cmd_dedup(args):
     dest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
 
     dup_problems = sum(len(g.members) for g in groups)
-    print(
+    log(
         f"[{series.name}] {len(groups)} duplicate group(s) covering "
         f"{dup_problems} problem(s) across {scoped_tests} test(s) -> {dest}"
     )
@@ -499,7 +560,7 @@ def cmd_dedup(args):
 
 def cmd_pdf(args):
     paths = pdf_to_images(args.pdf, args.out)
-    print(f"Wrote {len(paths)} page images to {args.out}")
+    log(f"Wrote {len(paths)} page images to {args.out}")
 
 
 def _add_engine_args(p):
@@ -549,10 +610,21 @@ def _add_engine_args(p):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Parse competitive-math tests.")
+    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser.add_argument(
+        "--no-print",
+        action="store_true",
+        help="suppress live output and only print a summary of completed work upon exit or interrupt",
+    )
+
+    parser = argparse.ArgumentParser(
+        parents=[common_parser], description="Parse competitive-math tests."
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_parse = sub.add_parser("parse", help="parse a page image, or a whole series")
+    p_parse = sub.add_parser(
+        "parse", parents=[common_parser], help="parse a page image, or a whole series"
+    )
     p_parse.add_argument("image", nargs="?", help="single page image (legacy mode)")
     p_parse.add_argument(
         "--series", choices=series_names(), help="parse a whole competition series"
@@ -574,7 +646,7 @@ def main():
     p_parse.set_defaults(func=cmd_parse)
 
     p_generic = sub.add_parser(
-        "parse-series", help="parse an unregistered series from a PDF or directory"
+        "parse-series", parents=[common_parser], help="parse an unregistered series from a PDF or directory"
     )
     p_generic.add_argument("name", help="custom series name used in the output path")
     p_generic.add_argument(
@@ -589,7 +661,9 @@ def main():
     _add_engine_args(p_generic)
     p_generic.set_defaults(func=cmd_parse_series)
 
-    p_sol = sub.add_parser("solutions", help="scrape per-problem solutions for a series")
+    p_sol = sub.add_parser(
+        "solutions", parents=[common_parser], help="scrape per-problem solutions for a series"
+    )
     p_sol.add_argument("--series", required=True, choices=series_names())
     p_sol.add_argument("--data-dir", help="external source dir for the series")
     p_sol.add_argument(
@@ -607,7 +681,7 @@ def main():
     p_sol.set_defaults(func=cmd_solutions)
 
     p_dedup = sub.add_parser(
-        "dedup", help="record problems shared across a series' tests"
+        "dedup", parents=[common_parser], help="record problems shared across a series' tests"
     )
     p_dedup.add_argument("--series", required=True, choices=series_names())
     p_dedup.add_argument(
@@ -629,14 +703,30 @@ def main():
     )
     p_dedup.set_defaults(func=cmd_dedup)
 
-    p_pdf = sub.add_parser("pdf", help="convert a PDF to page images")
+    p_pdf = sub.add_parser("pdf", parents=[common_parser], help="convert a PDF to page images")
     p_pdf.add_argument("pdf")
     p_pdf.add_argument("--out", default="m0")
     p_pdf.set_defaults(func=cmd_pdf)
 
     args = parser.parse_args()
     config.PRINT_TIME = getattr(args, "print_time", False)
-    args.func(args)
+
+    no_print = getattr(args, "no_print", False) or ("--no-print" in sys.argv)
+    _tracker.start(enabled=no_print)
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        _tracker.stop(status="interrupted")
+        sys.exit(130)
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else (1 if exc.code else 0)
+        _tracker.stop(status=None if code == 0 else f"exited with code {code}")
+        raise
+    except Exception as exc:
+        _tracker.stop(status=f"error: {exc}")
+        raise
+    else:
+        _tracker.stop()
 
 
 if __name__ == "__main__":
