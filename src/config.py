@@ -450,6 +450,7 @@ SERIES_DATA_DIRS = {
     "hmmt": _MATHTESTS_ROOT / "HMMT" / "out",
     "smt": _MATHTESTS_ROOT / "SMT" / "out",
     "bmt": _MATHTESTS_ROOT / "BMT" / "out",
+    "omo": _MATHTESTS_ROOT / "OMO" / "out",
 }
 
 # A Mathcounts <year>/<level> folder mixes problem rounds with answer/solution
