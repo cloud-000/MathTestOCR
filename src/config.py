@@ -452,6 +452,8 @@ SERIES_DATA_DIRS = {
     "bmt": _MATHTESTS_ROOT / "BMT" / "out",
     "omo": _MATHTESTS_ROOT / "OMO" / "out",
     "farml": _MATHTESTS_ROOT / "FARML" / "out",
+    "chmm": _MATHTESTS_ROOT / "CHMM" / "out",
+    "cmimc": _MATHTESTS_ROOT / "CMIMC",
 }
 
 # A Mathcounts <year>/<level> folder mixes problem rounds with answer/solution

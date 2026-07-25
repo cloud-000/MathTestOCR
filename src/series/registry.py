@@ -1,6 +1,8 @@
 """Series registry: maps a series name to its `Series` instance."""
 
 from .bmt import BmtSeries
+from .chmm import ChmmSeries
+from .cmimc import CmimcSeries
 from .farml import FarmlSeries
 from .hmmt import HmmtSeries
 from .mandelbrot import MandelbrotSeries
@@ -24,6 +26,8 @@ SERIES = {
         HmmtSeries(),
         SmtSeries(),
         BmtSeries(),
+        ChmmSeries(),
+        CmimcSeries(),
         OmoSeries(),
         FarmlSeries(),
     )
