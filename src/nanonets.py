@@ -444,8 +444,15 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
 
     items = []
     buf: list[str] = []
-    current = start_problem  # current problem number
-    last = start_problem  # highest problem number accepted so far
+    current = start_problem  # current effective problem number
+    last_raw = start_problem  # highest raw problem number in current section
+    max_raw = start_problem or 0  # max raw problem number in current section
+    offset = 0  # cumulative problem offset across section restarts
+    saw_heading = False
+
+    _HEADING_RE = re.compile(
+        r"^\s*(?:#+|\*{1,2})\s*(?:[A-Z0-9].*?)(?:\*{1,2})?\s*$", re.IGNORECASE
+    )
 
     def flush():
         if not buf:
@@ -455,27 +462,66 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
         if text:
             items.append({"kind": "text", "problem": current, "text": text})
 
+    def check_marker(raw_num: int) -> bool:
+        """Check if `raw_num` starts a new problem or a new section.
+
+        Flushes `buf` under the previous problem before updating state.
+        Returns True if accepted (updating state), False if rejected."""
+        nonlocal current, last_raw, max_raw, offset, saw_heading
+        is_restart = False
+        if last_raw is not None and raw_num <= last_raw:
+            if saw_heading or raw_num == 1 or (start_problem is not None and raw_num < start_problem):
+                is_restart = True
+
+        if is_restart:
+            flush()
+            offset += max_raw
+            last_raw = raw_num
+            max_raw = raw_num
+            current = raw_num + offset
+            saw_heading = False
+            return True
+        elif last_raw is None or raw_num > last_raw:
+            flush()
+            last_raw = raw_num
+            max_raw = max(max_raw, raw_num)
+            current = raw_num + offset
+            saw_heading = False
+            return True
+        return False
+
     def consume_lines(chunk):
         """Fold a run of plain text (no whole table block) into buf.
 
         Handles marker detection and per-line cleanup; any stray/unclosed table
         tag left in `chunk` is flattened to a line break.
         """
-        nonlocal current, last
+        nonlocal current, last_raw, saw_heading
         text = _TABLE_TAG_RE.sub("\n", chunk)
         text = _split_glued_markers(text, match_marker)
         for raw in text.splitlines():
             line = raw.strip()
             if not line:
                 continue
+            if line.startswith("#") or (
+                line.startswith("**")
+                and (
+                    "[" in line
+                    or "Section" in line
+                    or "Round" in line
+                    or "Division" in line
+                    or "Part" in line
+                )
+            ):
+                saw_heading = True
             if ordered_list_markers:
                 # A line opening an <li> begins the next problem (numbered by
                 # list position; the printed "N." OCR'd into a separate graphic
                 # column). Flatten the list/line-break scaffolding either way so
                 # no <ol>/<li>/<br> tag leaks into the statement.
                 if _LI_OPEN_RE.search(line):
-                    flush()
-                    current = last = (last or 0) + 1
+                    raw_num = (last_raw or 0) + 1
+                    check_marker(raw_num)
                 line = _LIST_TAG_RE.sub(" ", line).strip()
                 if not line:
                     continue
@@ -485,16 +531,13 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
             # line's "N. ____ unit" can be told apart from a real statement.
             probe = line.lstrip("*_# ")
             match = match_marker(probe)
-            if match is not None and (last is None or match[0] > last):
-                # New problem starts here; flush the previous one first.
-                flush()
-                current = last = match[0]
+            if match is not None and check_marker(match[0]):
                 # Drop the marker and any emphasis closer it left behind ("**").
                 line = probe[match[1] :].lstrip("*_ ")
             elif (
                 match is not None
-                and last is not None
-                and match[0] <= last
+                and last_raw is not None
+                and match[0] <= last_raw
                 and not _clean_text_line(probe[match[1] :].lstrip("*_ "))
             ):
                 # A marker repeating an already-seen number with nothing but a
@@ -532,7 +575,7 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
         table of values the problem itself refers to), and is kept verbatim as
         its own single-row table so that formatting survives.
         """
-        nonlocal current, last
+        nonlocal current, last_raw
         rows = _ROW_RE.findall(html)
         if not rows:
             row_html = re.sub(r"\s+", " ", html).strip()
@@ -544,9 +587,7 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
             first_cell = _TAG_RE.sub(" ", cells[0]).strip() if cells else ""
             probe = first_cell.lstrip("*_# ")
             m = match_marker(probe)
-            if m is not None and (last is None or m[0] > last):
-                flush()
-                current = last = m[0]
+            if m is not None and check_marker(m[0]):
                 # The statement and the answer blank each live in their own
                 # cell, but which column holds which varies by year: some print
                 # "N. ____ unit | <statement>", older rounds print the reverse,

@@ -172,6 +172,23 @@ def _exclude_ignored_tests(series, tests):
     return kept
 
 
+def _count_parsed(out_root, tests):
+    """Count tests that have parsed problems and parsed solutions/answers."""
+    test_count = 0
+    solution_count = 0
+    for t in tests:
+        dest = Path(out_root) / t.id
+        if (dest / "problems.json").exists():
+            test_count += 1
+        if (
+            (dest / "problem_solution.json").exists()
+            or (dest / "solutions.json").exists()
+            or (dest / "problem_answer.json").exists()
+        ):
+            solution_count += 1
+    return test_count, solution_count
+
+
 def _filter_existing(series, tests, out_root, existing):
     """Keep only tests that already have an output folder under `out_root`.
 
@@ -181,7 +198,11 @@ def _filter_existing(series, tests, out_root, existing):
     if not existing:
         return tests
     selected = [t for t in tests if (Path(out_root) / t.id).is_dir()]
-    log(f"[{series.name}] --existing: {len(selected)} of {len(tests)} test(s) present in {out_root}")
+    test_count, solution_count = _count_parsed(out_root, tests)
+    log(
+        f"[{series.name}] --existing: {len(selected)} of {len(tests)} test(s) present in {out_root} "
+        f"(test-count: {test_count}, solution-count: {solution_count})"
+    )
     return selected
 
 
@@ -667,6 +688,11 @@ def main():
     )
     p_generic.add_argument(
         "--force", action="store_true", help="re-parse tests even if already present"
+    )
+    p_generic.add_argument(
+        "--existing",
+        action="store_true",
+        help="only process tests that already have an out/<series>/<test>/ folder",
     )
     _add_engine_args(p_generic)
     p_generic.set_defaults(func=cmd_parse_series)

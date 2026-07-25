@@ -105,7 +105,7 @@ NANONETS_MAX_TOKENS = 16384
 # same answer-box HTML once per problem, hundreds of chars apart.
 NANONETS_REPEAT_WINDOW = 1200
 NANONETS_REPEAT_PROBE = 48
-NANONETS_REPEAT_COUNT = 5
+NANONETS_REPEAT_COUNT = 8
 NANONETS_REPEAT_MAX_GAP = NANONETS_REPEAT_PROBE * 6
 # The filler-only exemption in _is_runaway still catches a runaway made entirely
 # of filler (e.g. "- - - - -" or "____..."): a real rule/leader/answer-blank
