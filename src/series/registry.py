@@ -1,6 +1,7 @@
 """Series registry: maps a series name to its `Series` instance."""
 
 from .bmt import BmtSeries
+from .farml import FarmlSeries
 from .hmmt import HmmtSeries
 from .mandelbrot import MandelbrotSeries
 from .mathcounts import MathcountsSeries
@@ -24,6 +25,7 @@ SERIES = {
         SmtSeries(),
         BmtSeries(),
         OmoSeries(),
+        FarmlSeries(),
     )
 }
 
