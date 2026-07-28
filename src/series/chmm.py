@@ -140,6 +140,7 @@ class ChmmSeries(Series):
             # Genuine CHMM diagrams are substantially taller.
             min_picture_height_frac=0.025,
             solution_answer_box_filter=True,
+            statement_answer_table_filter=True,
         )
 
     @override
@@ -376,8 +377,9 @@ def _is_answer_key(full_text: str) -> bool:
 def _solution_body(block: str) -> str:
     lines = block.splitlines()
     for index, line in enumerate(lines):
-        if line.strip() == _SOLUTION_BOUNDARY:
-            return "\n".join(lines[index + 1 :]).strip()
+        if line.strip().startswith(_SOLUTION_BOUNDARY):
+            inline = line.strip()[len(_SOLUTION_BOUNDARY) :].strip()
+            return "\n".join(([inline] if inline else []) + lines[index + 1 :]).strip()
         match = _SOLUTION_LINE_RE.match(line)
         if match is not None:
             first = match.group(1).lstrip("*_ ").strip()
@@ -401,7 +403,9 @@ def _preserve_solution_boundaries(full_text: str) -> str:
         if not re.search(rf"(?i)\bProblem\s+(?:0\.)?{number}\b", before):
             return match.group(0)
         inline = (match.group(2) or "").strip()
-        return _SOLUTION_BOUNDARY + (f"\n{inline}" if inline else "")
+        # Keep a terse numeric answer on the sentinel line. Moving "22." onto
+        # its own line would make parse_layout mistake it for Problem 22.
+        return _SOLUTION_BOUNDARY + (f" {inline}" if inline else "")
 
     return pattern.sub(replace, full_text)
 

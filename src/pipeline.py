@@ -195,9 +195,10 @@ def _drop_solution_answer_boxes(pics, pdf_page, image):
     """Drop compact Pictures enclosing text on a born-digital ``Answer:`` row.
 
     A boxed answer has figure-like borders, so DETR can label it Picture even
-    though the PDF text layer still exposes the value inside. Requiring that
-    enclosed word to share ``Answer:``'s PDF text block and rendered row avoids
-    size-based filtering of compact diagrams on the following solution lines.
+    though the PDF text layer still exposes the value inside. Prefer an
+    ``Answer:`` row when present, and also recognize the compact axis-aligned
+    vector rectangle TeX draws around a boxed value. The latter covers CHMM
+    packets that put a bare box at the start or end of a solution.
     """
     words = pdf_page.get_text("words")
     if not words or pdf_page.rect.width <= 0 or pdf_page.rect.height <= 0:
@@ -209,8 +210,6 @@ def _drop_solution_answer_boxes(pics, pdf_page, image):
         for word in words
         if word[4].strip().rstrip(":").casefold() == "answer"
     ]
-    if not answer_words:
-        return pics
 
     def shares_answer_row(word):
         for answer in answer_words:
@@ -229,20 +228,101 @@ def _drop_solution_answer_boxes(pics, pdf_page, image):
         and shares_answer_row(word)
     ]
     max_width = image.width * 0.30
-    max_height = image.height * 0.04
+    max_height = image.height * 0.08
+
+    # PyMuPDF reports the four sides of a TeX \boxed value as separate line
+    # drawings. Reassemble small matching horizontal/vertical segments into
+    # rectangles and require text inside, which avoids treating an unlabeled
+    # diagram edge as an answer box.
+    horizontal = []
+    vertical = []
+    for drawing in pdf_page.get_drawings():
+        for item in drawing.get("items", ()):
+            if not item or item[0] != "l":
+                continue
+            p0, p1 = item[1], item[2]
+            if abs(p0.y - p1.y) <= 0.75:
+                horizontal.append(
+                    (min(p0.x, p1.x), (p0.y + p1.y) / 2, max(p0.x, p1.x))
+                )
+            elif abs(p0.x - p1.x) <= 0.75:
+                vertical.append(
+                    ((p0.x + p1.x) / 2, min(p0.y, p1.y), max(p0.y, p1.y))
+                )
+
+    vector_boxes = []
+    tolerance = 1.5
+    for top in horizontal:
+        for bottom in horizontal:
+            if bottom[1] <= top[1] + 4:
+                continue
+            if bottom[1] - top[1] > pdf_page.rect.height * 0.08:
+                continue
+            if abs(top[0] - bottom[0]) > tolerance or abs(top[2] - bottom[2]) > tolerance:
+                continue
+            if top[2] - top[0] > pdf_page.rect.width * 0.20:
+                continue
+            left = any(
+                abs(line[0] - top[0]) <= tolerance
+                and abs(line[1] - top[1]) <= tolerance
+                and abs(line[2] - bottom[1]) <= tolerance
+                for line in vertical
+            )
+            right = any(
+                abs(line[0] - top[2]) <= tolerance
+                and abs(line[1] - top[1]) <= tolerance
+                and abs(line[2] - bottom[1]) <= tolerance
+                for line in vertical
+            )
+            if not (left and right):
+                continue
+            rect = (top[0], top[1], top[2], bottom[1])
+            if any(
+                rect[0] - 1 <= (word[0] + word[2]) / 2 <= rect[2] + 1
+                and rect[1] - 1 <= (word[1] + word[3]) / 2 <= rect[3] + 1
+                for word in words
+            ):
+                vector_boxes.append(
+                    (rect[0] * sx, rect[1] * sy, rect[2] * sx, rect[3] * sy)
+                )
 
     def is_answer_box(pic):
         box = pic["box"]
         width, height = box[2] - box[0], box[3] - box[1]
         if width > max_width or height > max_height:
             return False
-        return any(
+        on_answer_row = any(
             box[0] <= (value[0] + value[2]) / 2 <= box[2]
             and box[1] <= (value[1] + value[3]) / 2 <= box[3]
             for value in value_boxes
         )
+        encloses_boxed_text = any(
+            box[0] - 4 <= (value[0] + value[2]) / 2 <= box[2] + 4
+            and box[1] - 4 <= (value[1] + value[3]) / 2 <= box[3] + 4
+            for value in vector_boxes
+        )
+        return on_answer_row or encloses_boxed_text
 
     return [pic for pic in pics if not is_answer_box(pic)]
+
+
+def _without_answer_table_picture(detections, image, markdown, enabled):
+    """Drop a wide lower-page response grid identified by its OCR table."""
+    if not enabled or not re.search(
+        r"(?is)(?:^|\n)\s*(?:[*_#]+\s*)*(?:\d+\s+)?Answers?\b"
+        r"[\s\S]{0,300}<table>",
+        markdown,
+    ):
+        return detections
+    return [
+        det
+        for det in detections
+        if not (
+            det["label"] in config.IMAGE_LABELS
+            and det["box"][2] - det["box"][0] >= image.width * 0.50
+            and (det["box"][1] + det["box"][3]) / 2 >= image.height * 0.45
+        )
+    ]
 
 
 def _contained_frac(inner, outer):
@@ -827,6 +907,12 @@ def process_image_markdown(
         image,
         raw_markdown,
         layout.drop_sponsor_watermark_picture,
+    )
+    assign_detections = _without_answer_table_picture(
+        assign_detections,
+        image,
+        raw_markdown,
+        layout.statement_answer_table_filter,
     )
     if clean_markdown is not None:
         markdown = clean_markdown(markdown)

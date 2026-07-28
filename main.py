@@ -375,6 +375,13 @@ def cmd_solutions(args):
             sol = series.solution_source(test) if series.has_solutions else None
             pages_md = None
             if series.has_solutions and sol is None:
+                if args.force:
+                    # A forced refresh is authoritative even when a test has no
+                    # worked-solution source (for example presentation-style
+                    # finals). Remove figures/text left by an older parser that
+                    # mistakenly treated page furniture as solutions.
+                    output.write_solutions({}, dest)
+                    output.write_solution_images({}, dest)
                 log(f"[{series.name}] skip {test.id} (no solution source found)")
             if sol is not None:
                 pages_md = _scrape_solutions(args, series, test, sol, dest, model)

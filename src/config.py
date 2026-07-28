@@ -439,6 +439,11 @@ class LayoutOptions:
     # a boxed numeric answer as a figure; the text-line check distinguishes it
     # from a genuinely small diagram immediately below the answer.
     solution_answer_box_filter: bool = False
+    # Drop a wide, lower-page Picture when the page OCR contains an explicit
+    # Answers table. Some answer sheets render the entire blank response grid as
+    # one Picture; its cell labels are already removed by series markdown
+    # cleanup, so the matching crop is furniture too.
+    statement_answer_table_filter: bool = False
 
 
 # --- Detection ---
