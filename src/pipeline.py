@@ -848,6 +848,7 @@ def process_image_markdown(
         strict_section_restarts=layout.strict_section_restarts,
         consecutive_problem_markers=layout.consecutive_problem_markers,
         page_initial_point_restart=layout.page_initial_point_restart,
+        flat_problem_numbering=layout.flat_problem_numbering,
     )
 
     print(f"[{engine}] Assembling problems...")
@@ -1278,6 +1279,7 @@ def process_solution_document(
             strict_section_restarts=layout.strict_section_restarts,
             consecutive_problem_markers=layout.consecutive_problem_markers,
             page_initial_point_restart=layout.page_initial_point_restart,
+            flat_problem_numbering=layout.flat_problem_numbering,
         )
         pics = _sorted_pictures(
             detections,

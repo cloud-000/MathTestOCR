@@ -403,6 +403,11 @@ class LayoutOptions:
     # The point-value requirement distinguishes these starts from numbered
     # procedures inside a continued problem.
     page_initial_point_restart: bool = False
+    # Never reinterpret a lower problem number as a new numbered section.
+    # Use for a series whose tests and solution packets always have one flat,
+    # monotonically increasing problem sequence (CHMM). This is stronger than
+    # strict_section_restarts, which still permits a restart after a heading.
+    flat_problem_numbering: bool = False
     # Take each problem's start position from its left-margin heading box alone
     # (see config.HEADER_LABELS), ignoring the statement/body text below it. On
     # by default a problem whose number sits on its own heading line (e.g. Purple

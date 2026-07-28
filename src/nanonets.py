@@ -493,6 +493,7 @@ def parse_layout(
     strict_section_restarts=False,
     consecutive_problem_markers=False,
     page_initial_point_restart=False,
+    flat_problem_numbering=False,
 ):
     """Turn Nanonets markdown into an ordered list of items.
 
@@ -567,7 +568,11 @@ def parse_layout(
         first_page_marker = not page_marker_seen
         page_marker_seen = True
         is_restart = False
-        if last_raw is not None and raw_num <= last_raw:
+        if (
+            not flat_problem_numbering
+            and last_raw is not None
+            and raw_num <= last_raw
+        ):
             permissive_restart = not strict_section_restarts and (
                 raw_num == 1
                 or (start_problem is not None and raw_num < start_problem)

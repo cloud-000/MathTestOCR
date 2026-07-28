@@ -497,7 +497,11 @@ def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, so
             # A same-file key shares the test's solution cache; a standalone
             # answer document gets one cache shared across every test it covers
             # (Mathcounts: one answers.pdf serves sprint/target/team/...).
-            if src == sol:
+            if src == test.source:
+                # Some presentation-style tests contain their own answer slides
+                # (CHMM Integration Bee finals). Reuse the paid statement OCR.
+                cache = OCRCache(dest / PARSE_CACHE, enabled=args.cache)
+            elif src == sol:
                 cache = OCRCache(dest / SOLUTION_CACHE, enabled=args.cache)
             else:
                 cache = OCRCache(
@@ -508,6 +512,11 @@ def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, so
                 pages_md = ocr_pages(pages, model, cache=cache, layout=_resolve_layout(series, args))
         answers = series.parse_answers(test, pages_md)
     if not answers:
+        # A forced refresh is authoritative. Do not leave a stale partial key
+        # behind when the current parser correctly finds that a proof round (or
+        # an incomplete source packet) has no extractable short answers.
+        if args.force:
+            output.write_solutions({}, dest, suffix="answer")
         log(f"[{series.name}] skip {test.id} (no answers found)")
         return
     n = output.write_solutions(answers, dest, suffix="answer")
