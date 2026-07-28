@@ -84,6 +84,7 @@ class ChmmSeries(Series):
     name = "chmm"
     has_solutions = True
     has_answers = True
+    ignored_test_substrings = ("math-talk", "tcs")
 
     @override
     def discover_tests(self, data_dir):
@@ -108,14 +109,27 @@ class ChmmSeries(Series):
     @override
     def solution_source(self, test: Test):
         solution = test.source.parent / "solutions.pdf"
-        return solution if solution.exists() else None
+        if solution.exists():
+            return solution
+        season = test.source.parent.parent
+        if season.is_dir():
+            candidates = [
+                p
+                for p in sorted(season.glob("**/solutions.pdf"))
+                if p.parent.name != "power"
+            ]
+            if candidates:
+                return candidates[0]
+        return None
 
     @override
     def answer_source(self, test: Test):
         return self.solution_source(test)
 
     @override
-    def parse_solutions(self, full_text: str) -> dict:
+    def parse_solutions(self, full_text: str, test: Test = None) -> dict:
+        if test is not None:
+            full_text = _filter_round_text(full_text, test.id)
         grouped = _group_blocks(full_text)
         # A few early files are short answer keys, not worked solutions.  They
         # belong in problem_answer.json only.
@@ -125,7 +139,8 @@ class ChmmSeries(Series):
 
     @override
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:
-        full_text = "\n\n".join(pages_markdown)
+        filtered_pages = [_filter_round_text(md, test.id) for md in pages_markdown]
+        full_text = "\n\n".join(filtered_pages)
         grouped = _group_blocks(full_text)
         answer_key = _is_answer_key(full_text)
         answers = {}
@@ -136,6 +151,33 @@ class ChmmSeries(Series):
             if value:
                 answers[number] = value
         return answers
+
+
+def _filter_round_text(full_text: str, test_id: str) -> str:
+    """If full_text contains multi-round section headers, filter to test_id's round."""
+    round_keywords = ("individual", "team", "mixer", "tiebreaker")
+    target = next((r for r in round_keywords if r in test_id.lower()), None)
+    if not target:
+        return full_text
+
+    header_pattern = re.compile(
+        r"(?im)^\s*(?:#+\s*|\*{1,2}\s*)?(?:Fall|Spring|Winter|Annual)?\s*(?:\d{4})?\s*"
+        r"(?:Caltech[- ]Harvey Mudd Math Competition)?\s*"
+        r"(Individual|Team|Mixer|Tiebreaker|Power)\s+(?:Round\s*)?(?:Solutions|Answers|Round)?\s*$"
+    )
+    matches = list(header_pattern.finditer(full_text))
+    if not matches:
+        return full_text
+
+    sections = []
+    for i, m in enumerate(matches):
+        r_name = m.group(1).lower()
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(full_text)
+        sections.append((r_name, full_text[start:end]))
+
+    matching_text = [sec_text for r_name, sec_text in sections if target in r_name]
+    return "\n\n".join(matching_text) if matching_text else full_text
 
 
 def _group_blocks(full_text: str) -> dict[int, str]:
@@ -151,8 +193,12 @@ def _group_blocks(full_text: str) -> dict[int, str]:
 def _is_answer_key(full_text: str) -> bool:
     head = "\n".join(full_text.splitlines()[:12])
     return bool(
-        re.search(r"\b(?:Individual|Team|Tiebreaker|Mixer)\s+Answers\b", head, re.I)
-        and not re.search(r"(?im)^\s*Solution\b", full_text)
+        re.search(
+            r"\b(?:Individual|Team|Tiebreaker|Mixer)\s+(?:Answers|Round Solutions)\b",
+            head,
+            re.I,
+        )
+        and not re.search(r"(?im)^\s*Solution[.:]?\b", full_text)
     )
 
 

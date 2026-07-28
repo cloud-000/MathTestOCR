@@ -386,6 +386,16 @@ def cmd_solutions(args):
         _close_engine(args.engine, model)
 
 
+def _has_nonempty_json(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+        return bool(data)
+    except (OSError, ValueError):
+        return False
+
+
 def _scrape_solutions(args, series, test, sol, dest, model):
     """OCR one test's solution document into solution text + figure crops.
 
@@ -394,9 +404,8 @@ def _scrape_solutions(args, series, test, sol, dest, model):
     when the test was skipped or the mlx engine (no whole-page markdown) ran.
     """
     has_existing_solution = (
-        (dest / "problem_solution.json").exists()
-        or (dest / "solutions.json").exists()
-        or (dest / "problem_answer.json").exists()
+        _has_nonempty_json(dest / "problem_solution.json")
+        or _has_nonempty_json(dest / "solutions.json")
     )
     if has_existing_solution and not args.force:
         log(f"[{series.name}] skip {test.id} solutions (exist; --force to redo)")
@@ -422,7 +431,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
             cleaned = "\n\n".join(
                 series.clean_solution_markdown(i, md) for i, md in enumerate(pages_md)
             )
-            solutions = series.parse_solutions(cleaned)
+            solutions = series.parse_solutions(cleaned, test=test)
         else:
             # Legacy mlx path: per-page marker pipeline; figures come from the
             # problems' own image elements.
@@ -469,11 +478,7 @@ def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, so
     OCRs `answer_source` and hands the pages to `parse_answers`. When the key
     lives inside the solution document just OCR'd, its markdown is reused.
     """
-    has_existing_answer = (
-        (dest / "problem_answer.json").exists()
-        or (dest / "problem_solution.json").exists()
-        or (dest / "solutions.json").exists()
-    )
+    has_existing_answer = _has_nonempty_json(dest / "problem_answer.json")
     if has_existing_answer and not args.force:
         log(f"[{series.name}] skip {test.id} answers (exist; --force to redo)")
         return

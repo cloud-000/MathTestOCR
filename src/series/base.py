@@ -217,7 +217,7 @@ class Series:
         """
         return None
 
-    def parse_solutions(self, full_text: str) -> dict:
+    def parse_solutions(self, full_text: str, test: Test = None) -> dict:
         """Segment the whole-test solution OCR into {problem_number: text}.
 
         `full_text` is every solution page's markdown (after

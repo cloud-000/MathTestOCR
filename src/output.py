@@ -87,7 +87,10 @@ def write_solutions(solutions, dest, suffix="solution"):
         elif value and value.strip():
             data[str(number)] = [value] if suffix == "solution" else value
             written += 1
-    _write_json(path, data)
+    if data:
+        _write_json(path, data)
+    elif path.exists():
+        path.unlink()
     return written
 
 
