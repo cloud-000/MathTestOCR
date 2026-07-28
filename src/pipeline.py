@@ -191,7 +191,9 @@ def _box_area(box):
     return max(0, x1 - x0) * max(0, y1 - y0)
 
 
-def _drop_solution_answer_boxes(pics, pdf_page, image):
+def _drop_solution_answer_boxes(
+    pics, pdf_page, image, max_vector_box_width_frac=0.30
+):
     """Drop compact Pictures enclosing text on a born-digital ``Answer:`` row.
 
     A boxed answer has figure-like borders, so DETR can label it Picture even
@@ -227,7 +229,11 @@ def _drop_solution_answer_boxes(pics, pdf_page, image):
         if word[4].strip().rstrip(":").casefold() != "answer"
         and shares_answer_row(word)
     ]
-    max_width = image.width * 0.30
+    max_answer_row_width = image.width * 0.30
+    # DETR sometimes joins a boxed final value to the display equation leading
+    # into it. Allow that wider crop only when the PDF supplies the stronger
+    # evidence of a reconstructed vector box containing text.
+    max_vector_box_width = image.width * max_vector_box_width_frac
     max_height = image.height * 0.08
 
     # PyMuPDF reports the four sides of a TeX \boxed value as separate line
@@ -289,14 +295,14 @@ def _drop_solution_answer_boxes(pics, pdf_page, image):
     def is_answer_box(pic):
         box = pic["box"]
         width, height = box[2] - box[0], box[3] - box[1]
-        if width > max_width or height > max_height:
+        if height > max_height:
             return False
-        on_answer_row = any(
+        on_answer_row = width <= max_answer_row_width and any(
             box[0] <= (value[0] + value[2]) / 2 <= box[2]
             and box[1] <= (value[1] + value[3]) / 2 <= box[3]
             for value in value_boxes
         )
-        encloses_boxed_text = any(
+        encloses_boxed_text = width <= max_vector_box_width and any(
             box[0] - 4 <= (value[0] + value[2]) / 2 <= box[2] + 4
             and box[1] - 4 <= (value[1] + value[3]) / 2 <= box[3] + 4
             for value in vector_boxes
@@ -1381,7 +1387,12 @@ def process_solution_document(
         # pdf_io names rendered pages "page_<pdf page number>.png".
         pdf_index = int(Path(path).stem.split("_")[1]) - 1 if doc is not None else None
         if pics and doc is not None and layout.solution_answer_box_filter:
-            pics = _drop_solution_answer_boxes(pics, doc[pdf_index], image)
+            pics = _drop_solution_answer_boxes(
+                pics,
+                doc[pdf_index],
+                image,
+                layout.solution_answer_box_max_width_frac,
+            )
         if pics and doc is not None and figure_floor is not None:
             floor = figure_floor(doc[pdf_index], image)
             if floor is not None:

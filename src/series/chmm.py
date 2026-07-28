@@ -140,6 +140,7 @@ class ChmmSeries(Series):
             # Genuine CHMM diagrams are substantially taller.
             min_picture_height_frac=0.025,
             solution_answer_box_filter=True,
+            solution_answer_box_max_width_frac=0.40,
             statement_answer_table_filter=True,
         )
 

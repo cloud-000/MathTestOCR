@@ -439,6 +439,10 @@ class LayoutOptions:
     # a boxed numeric answer as a figure; the text-line check distinguishes it
     # from a genuinely small diagram immediately below the answer.
     solution_answer_box_filter: bool = False
+    # Maximum width for the stronger vector-box variant of the solution answer
+    # filter. Keep the conservative historical limit unless a series is known
+    # to have DETR merge boxed answers with their preceding display equation.
+    solution_answer_box_max_width_frac: float = 0.30
     # Drop a wide, lower-page Picture when the page OCR contains an explicit
     # Answers table. Some answer sheets render the entire blank response grid as
     # one Picture; its cell labels are already removed by series markdown
