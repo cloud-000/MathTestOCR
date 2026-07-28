@@ -411,6 +411,7 @@ def parse_layout(
     ordered_list_markers=False,
     point_value_list_markers=False,
     strict_section_restarts=False,
+    page_initial_point_restart=False,
 ):
     """Turn Nanonets markdown into an ordered list of items.
 
@@ -460,6 +461,7 @@ def parse_layout(
     max_raw = start_problem or 0  # max raw problem number in current section
     offset = 0  # cumulative problem offset across section restarts
     saw_heading = False
+    page_marker_seen = False
 
     _HEADING_RE = re.compile(
         r"^\s*(?:#+|\*{1,2})\s*(?:[A-Z0-9].*?)(?:\*{1,2})?\s*$", re.IGNORECASE
@@ -473,19 +475,30 @@ def parse_layout(
         if text:
             items.append({"kind": "text", "problem": current, "text": text})
 
-    def check_marker(raw_num: int) -> bool:
+    def check_marker(raw_num: int, has_point_value: bool = False) -> bool:
         """Check if `raw_num` starts a new problem or a new section.
 
         Flushes `buf` under the previous problem before updating state.
         Returns True if accepted (updating state), False if rejected."""
-        nonlocal current, last_raw, max_raw, offset, saw_heading
+        nonlocal current, last_raw, max_raw, offset, saw_heading, page_marker_seen
+        first_page_marker = not page_marker_seen
+        page_marker_seen = True
         is_restart = False
         if last_raw is not None and raw_num <= last_raw:
             permissive_restart = not strict_section_restarts and (
                 raw_num == 1
                 or (start_problem is not None and raw_num < start_problem)
             )
-            if saw_heading or permissive_restart:
+            initial_point_restart = (
+                page_initial_point_restart
+                and start_problem is not None
+                and first_page_marker
+                and not items
+                and not buf
+                and raw_num == 1
+                and has_point_value
+            )
+            if saw_heading or permissive_restart or initial_point_restart:
                 is_restart = True
 
         if is_restart:
@@ -565,9 +578,14 @@ def parse_layout(
             # line's "N. ____ unit" can be told apart from a real statement.
             probe = line.lstrip("*_# ")
             match = match_marker(probe)
-            if match is not None and check_marker(match[0]):
+            marker_tail = (
+                probe[match[1] :].lstrip("*_ ") if match is not None else ""
+            )
+            if match is not None and check_marker(
+                match[0], has_point_value=bool(_POINT_VALUE_RE.match(marker_tail))
+            ):
                 # Drop the marker and any emphasis closer it left behind ("**").
-                line = probe[match[1] :].lstrip("*_ ")
+                line = marker_tail
             elif (
                 match is not None
                 and last_raw is not None

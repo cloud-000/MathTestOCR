@@ -374,6 +374,13 @@ class LayoutOptions:
     # inside problems; the permissive default would mistake an internal "1."
     # for a new section.
     strict_section_restarts: bool = False
+    # Let a point-valued "1. [N] ..." that is the first marker/content on a new
+    # page restart after the previous page's carry. HMMT sometimes prints a
+    # section heading at the bottom of one page and the restarted problems on
+    # the next, so strict_section_restarts cannot see both in one parse call.
+    # The point-value requirement distinguishes these starts from numbered
+    # procedures inside a continued problem.
+    page_initial_point_restart: bool = False
     # Take each problem's start position from its left-margin heading box alone
     # (see config.HEADER_LABELS), ignoring the statement/body text below it. On
     # by default a problem whose number sits on its own heading line (e.g. Purple

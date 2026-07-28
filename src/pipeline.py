@@ -662,6 +662,7 @@ def process_image_markdown(
         ordered_list_markers=layout.ordered_list_markers,
         point_value_list_markers=layout.point_value_list_markers,
         strict_section_restarts=layout.strict_section_restarts,
+        page_initial_point_restart=layout.page_initial_point_restart,
     )
 
     print(f"[{engine}] Assembling problems...")
@@ -1090,6 +1091,7 @@ def process_solution_document(
             # genuine ordered list into spurious problems).
             point_value_list_markers=layout.point_value_list_markers,
             strict_section_restarts=layout.strict_section_restarts,
+            page_initial_point_restart=layout.page_initial_point_restart,
         )
         pics = _sorted_pictures(
             detections,

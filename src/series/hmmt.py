@@ -194,6 +194,7 @@ def _marker_count(text: str) -> int:
             _match_marker,
             point_value_list_markers=True,
             strict_section_restarts=True,
+            page_initial_point_restart=True,
         )
         if item["problem"] is not None
     }
@@ -284,6 +285,7 @@ class HmmtSeries(Series):
             inline_figures=True,
             point_value_list_markers=True,
             strict_section_restarts=True,
+            page_initial_point_restart=True,
             equation_text_overlap=0.3,
             solution_equation_text_overlap=True,
         )
@@ -437,6 +439,7 @@ def _group_blocks(full_text: str, match) -> dict:
         match,
         point_value_list_markers=True,
         strict_section_restarts=True,
+        page_initial_point_restart=True,
     ):
         if item["problem"] is None or item["kind"] != "text":
             continue

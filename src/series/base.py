@@ -238,6 +238,7 @@ class Series:
             split_marker_table_rows=opts.split_marker_table_rows,
             point_value_list_markers=opts.point_value_list_markers,
             strict_section_restarts=opts.strict_section_restarts,
+            page_initial_point_restart=opts.page_initial_point_restart,
         ):
             if item["problem"] is None:
                 continue
