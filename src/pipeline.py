@@ -14,6 +14,7 @@ Engines:
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 
 from PIL import Image
 
@@ -21,6 +22,18 @@ from . import anchors as anchors_mod
 from . import config, detect, grouping
 from . import nanonets as nanonets_mod
 from .ocr import OCRModel
+
+
+_FIGURE_CUE_RE = re.compile(
+    r"\b(?:shown|diagram|figure|graph|grid|number line|chart|pictured|"
+    r"illustration|below|at right)\b",
+    re.IGNORECASE,
+)
+_SPONSOR_WATERMARK_RE = re.compile(
+    r"<watermark\b[^>]*>[^<]*(?:lockheed(?:\s+martin)?|raytheon)[^<]*"
+    r"</watermark>|printing\s+of\s+this\s+competition\s+is\s+underwritten\s+by",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -447,12 +460,23 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
     filter (`max_picture_area_frac`) and whether the gap-based problem-start
     fallback is used when DETR's left-margin count disagrees with nanonets'.
 
-    `items` is the page's parse_layout output. When DETR's problem-start count
-    disagrees with nanonets' problem count (so the geometry is untrustworthy),
-    the problem-tagged inline <img> positions are used as a fallback -- but only
-    when their count matches DETR's pictures and none is appended past the last
-    problem's text (see below).
+    `items` is the page's parse_layout output. Problem-tagged inline <img>
+    positions can replace untrustworthy geometry, but only when their count
+    matches both the retained Pictures and the pre-position-filter candidate
+    count. That last guard prevents a filtered right-side figure from making an
+    unrelated remaining crop accidentally line up with the wrong tag.
     """
+    pre_position_pics = _sorted_pictures(
+        detections,
+        image,
+        layout.max_picture_area_frac,
+        None,
+        None,
+        None,
+        layout.min_picture_height_frac,
+        layout.equation_text_overlap,
+        equation_text_boxes,
+    )
     pics = _sorted_pictures(
         detections,
         image,
@@ -473,6 +497,49 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
         # attach them to.
         return {carry: list(pics)} if carry is not None else {}
     starts = _problem_start_ys(detections, image, layout.problem_start_from_headers)
+    indexed = list(enumerate(items or []))
+    img_tags = [
+        (i, it["problem"])
+        for i, it in indexed
+        if it["kind"] == "image" and it["problem"] is not None
+    ]
+
+    def _appended(idx, prob):
+        return not any(
+            it["kind"] == "text"
+            and it["problem"] is not None
+            and it["problem"] > prob
+            for j, it in indexed
+            if j > idx
+        )
+
+    tag_numbers = [number for _, number in img_tags]
+    increasing_tags = all(
+        previous < current
+        for previous, current in zip(tag_numbers, tag_numbers[1:])
+    )
+    text_by_problem = {}
+    for _, item in indexed:
+        if item["kind"] == "text" and item["problem"] is not None:
+            text_by_problem.setdefault(item["problem"], []).append(item["text"])
+    cue_problems = {
+        number
+        for number, parts in text_by_problem.items()
+        if _FIGURE_CUE_RE.search("\n".join(parts))
+    }
+    trusted_tags = (
+        bool(img_tags)
+        and len(img_tags) == len(pics) == len(pre_position_pics)
+        and increasing_tags
+        and not any(_appended(i, number) for i, number in img_tags)
+    )
+
+    def _groups_from_tags():
+        groups = {}
+        for pic, (_, number) in zip(pics, img_tags):
+            groups.setdefault(number, []).append(pic)
+        return groups
+
     # Geometry is the primary signal, but only trustworthy when DETR found exactly
     # one start per problem: a figure's vertical position then pins it to the
     # problem whose text sits directly above. When the counts disagree the starts
@@ -490,26 +557,8 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
         # later, higher-numbered problem's text follows the tag (trailing footer
         # text inherits the last problem's number, so a plain position check is
         # not enough); when that happens we distrust the tags and keep geometry.
-        indexed = list(enumerate(items or []))
-        img_tags = [
-            (i, it["problem"])
-            for i, it in indexed
-            if it["kind"] == "image" and it["problem"] is not None
-        ]
-
-        def _appended(idx, prob):
-            return not any(
-                it["kind"] == "text" and it["problem"] is not None and it["problem"] > prob
-                for j, it in indexed
-                if j > idx
-            )
-
-        appended = any(_appended(i, p) for i, p in img_tags)
-        if img_tags and len(img_tags) == len(pics) and not appended:
-            groups = {}
-            for pic, (_, number) in zip(pics, img_tags):
-                groups.setdefault(number, []).append(pic)
-            return groups
+        if trusted_tags and not layout.prefer_inline_picture_tags:
+            return _groups_from_tags()
         if layout.point_marker_row_anchor:
             marker_starts = _point_marker_row_starts(
                 image,
@@ -525,29 +574,96 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
     if not starts:
         # No usable text geometry: keep every figure, on the first problem.
         groups[problem_seq[0]] = list(pics)
-        return groups
-    if len(starts) != len(problem_seq):
-        print(
-            f"[{engine}] problem-count mismatch: {len(problem_seq)} problem(s) from "
-            f"text vs {len(starts)} from DETR layout; figure assignment may drift"
-        )
-    for pic in pics:
-        yc = (pic["box"][1] + pic["box"][3]) / 2
-        if yc + config.Y_TOL < starts[0]:
-            # Above this page's first problem: a figure carried over from the
-            # previous page's problem, or (no carry) a page header / logo to drop.
-            if carry is not None:
-                groups.setdefault(carry, []).append(pic)
-            continue
-        idx = 0
-        for i, sy in enumerate(starts):
-            if sy <= yc + config.Y_TOL:
-                idx = i
+    else:
+        if len(starts) != len(problem_seq):
+            print(
+                f"[{engine}] problem-count mismatch: {len(problem_seq)} problem(s) from "
+                f"text vs {len(starts)} from DETR layout; figure assignment may drift"
+            )
+        for pic in pics:
+            yc = (pic["box"][1] + pic["box"][3]) / 2
+            if yc + config.Y_TOL < starts[0]:
+                # Above this page's first problem: a figure carried over from the
+                # previous page's problem, or (no carry) a page header / logo to drop.
+                if carry is not None:
+                    groups.setdefault(carry, []).append(pic)
+                continue
+            idx = 0
+            for i, sy in enumerate(starts):
+                if sy <= yc + config.Y_TOL:
+                    idx = i
+                else:
+                    break
+            idx = min(idx, len(problem_seq) - 1)
+            groups.setdefault(problem_seq[idx], []).append(pic)
+
+    if trusted_tags and layout.prefer_inline_picture_tags:
+        # Reconcile each tag with geometry instead of replacing every assignment
+        # wholesale. A one-row geometry drift is corrected when it puts a crop
+        # on a statement with no figure cue and the tag points to one that
+        # explicitly needs a figure. Conversely, if geometry already lands on a
+        # figure-bearing statement, keep it: DETR may have missed a different
+        # figure and made the remaining Picture/tag counts coincide by accident.
+        geometry_problem = {
+            id(pic): number
+            for number, assigned in groups.items()
+            for pic in assigned
+        }
+        reconciled = {}
+        for pic, (_, tagged_number) in zip(pics, img_tags):
+            geometric_number = geometry_problem.get(id(pic))
+            if (
+                tagged_number in cue_problems
+                and geometric_number not in cue_problems
+            ):
+                number = tagged_number
             else:
-                break
-        idx = min(idx, len(problem_seq) - 1)
-        groups.setdefault(problem_seq[idx], []).append(pic)
+                number = geometric_number
+            if number is not None:
+                reconciled.setdefault(number, []).append(pic)
+        return reconciled
     return groups
+
+
+def _without_sponsor_watermark_picture(detections, image, raw_markdown, enabled):
+    """Remove a sponsor logo only when OCR independently identifies its footer.
+
+    Older MATHCOUNTS pages put a very wide Lockheed Martin or Raytheon mark near
+    the bottom edge. A general footer band is unsafe because real diagrams also
+    extend that low. The explicit raw-OCR watermark/underwriting marker makes
+    the filter page-specific; selecting only the lowest wide Picture keeps any
+    other figures on the page.
+    """
+    if not enabled or not _SPONSOR_WATERMARK_RE.search(raw_markdown):
+        return detections
+    width, height = image.size
+    candidates = []
+    for detection in detections:
+        if detection["label"] not in config.IMAGE_LABELS:
+            continue
+        x1, y1, x2, y2 = detection["box"]
+        box_height = y2 - y1
+        if box_height <= 0:
+            continue
+        center_y = (y1 + y2) / 2
+        aspect = (x2 - x1) / box_height
+        # Sponsor marks are short wordmarks (the observed Lockheed crops are
+        # about 5.1--6.2 times wider than tall). Requiring both that shape and a
+        # true footer position prevents a low number line or chart from becoming
+        # the fallback candidate when DETR did not detect the logo.
+        if (
+            center_y >= 0.86 * height
+            and box_height <= 0.08 * height
+            and aspect >= 4.5
+        ):
+            candidates.append(detection)
+    if not candidates:
+        return detections
+    logo = max(candidates, key=lambda detection: (
+        (detection["box"][1] + detection["box"][3]) / 2,
+        detection["box"][2] - detection["box"][0],
+    ))
+    return [detection for detection in detections if detection is not logo]
 
 
 def _ocr_page(
@@ -705,8 +821,22 @@ def process_image_markdown(
         mask_boxes=_figure_mask_boxes(detections),
         validate=validate_markdown,
     )
+    raw_markdown = markdown
+    assign_detections = _without_sponsor_watermark_picture(
+        assign_detections,
+        image,
+        raw_markdown,
+        layout.drop_sponsor_watermark_picture,
+    )
     if clean_markdown is not None:
         markdown = clean_markdown(markdown)
+        # A series cleanup that deliberately removes every byte has classified
+        # this as a furniture-only page (MATHCOUNTS Target divider/score sheet).
+        # Do not let its DETR logos fall through the no-starts branch and attach
+        # to the problem carried from the preceding page.
+        if raw_markdown.strip() and not markdown.strip():
+            print(f"[{engine}] Page suppressed by series cleanup.")
+            return [], detections, {}
     print(f"[{engine}] Whole-page OCR done.")
     items = nanonets_mod.parse_layout(
         markdown,
@@ -716,6 +846,7 @@ def process_image_markdown(
         ordered_list_markers=layout.ordered_list_markers,
         point_value_list_markers=layout.point_value_list_markers,
         strict_section_restarts=layout.strict_section_restarts,
+        consecutive_problem_markers=layout.consecutive_problem_markers,
         page_initial_point_restart=layout.page_initial_point_restart,
     )
 
@@ -1145,6 +1276,7 @@ def process_solution_document(
             # genuine ordered list into spurious problems).
             point_value_list_markers=layout.point_value_list_markers,
             strict_section_restarts=layout.strict_section_restarts,
+            consecutive_problem_markers=layout.consecutive_problem_markers,
             page_initial_point_restart=layout.page_initial_point_restart,
         )
         pics = _sorted_pictures(

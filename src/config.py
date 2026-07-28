@@ -129,6 +129,10 @@ NANONETS_LOOP_MIN_PERIOD = 80
 NANONETS_LOOP_MAX_PERIOD = 1600
 NANONETS_LOOP_MIN_REPEATS = 6
 NANONETS_LOOP_MATCH = 0.9
+# Incrementing figure-description runaway guard ("then to point 17, then to
+# point 18, ..."). Since every clause changes, verbatim repeat detection cannot
+# see it; twenty consecutive increments are far beyond any faithful caption.
+NANONETS_SEQUENCE_LOOP_COUNT = 20
 
 # --- Llama engine (hosted LlamaCloud parsing API) ---
 # Selected with `--engine llama`: a cloud alternative to the local nanonets
@@ -348,6 +352,19 @@ class LayoutOptions:
     # gaps (see pipeline._gap_based_starts). Off by default: on pages with
     # unusual margins it can scramble otherwise-correct figure assignment.
     gap_based_picture_fallback: bool = False
+    # Prefer problem-tagged inline <img> order over DETR problem-start geometry
+    # when every retained Picture has exactly one increasing, non-appended tag
+    # and no Picture candidate was discarded by a positional filter. Off by
+    # default because most OCR engines invent or omit tags; MATHCOUNTS opts in
+    # for pages where answer-blank geometry can shift an otherwise exact tag
+    # sequence by one row.
+    prefer_inline_picture_tags: bool = False
+    # When the raw OCR explicitly identifies a sponsor watermark/footer, drop
+    # the bottommost wide Picture in the bottom page band. MATHCOUNTS booklets
+    # print Lockheed Martin / Raytheon logos there, but genuine figures can also
+    # occupy the same band on pages without that marker; keying the filter to
+    # OCR content avoids the unsafe blanket footer cutoff.
+    drop_sponsor_watermark_picture: bool = False
     # Split a <table> block row-by-row, rewriting each row whose leading cell is
     # a problem marker into plain statement text (MATHCOUNTS packs many problems
     # into one answer-blank table; Mandelbrot lays every page out as a two-column
@@ -374,6 +391,11 @@ class LayoutOptions:
     # inside problems; the permissive default would mistake an internal "1."
     # for a new section.
     strict_section_restarts: bool = False
+    # Require each accepted marker to be exactly one greater than the previous
+    # marker. MATHCOUNTS round numbering is always contiguous, while its data
+    # tables often begin rows with integers that the permissive bare-number
+    # matcher would otherwise promote to problem numbers.
+    consecutive_problem_markers: bool = False
     # Let a point-valued "1. [N] ..." that is the first marker/content on a new
     # page restart after the previous page's carry. HMMT sometimes prints a
     # section heading at the bottom of one page and the restarted problems on

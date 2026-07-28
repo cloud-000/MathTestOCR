@@ -21,6 +21,16 @@ from .anchors import _match_marker
 _IMG_RE = re.compile(
     r"<img\b[^>]*>(.*?)</img>|<img\b[^>]*/?>", re.IGNORECASE | re.DOTALL
 )
+# ``parse_layout`` normally tokenizes image tags before it looks at tables.
+# Some OCR responses, however, wrap an entire MATHCOUNTS statement in ``<img>``
+# inside a marker table cell. Protect those tags until ``consume_table`` can
+# decide whether their text is the only available statement or merely a
+# redundant diagram description.
+_TABLE_IMG_RE = re.compile(
+    r"<table_img\b[^>]*>(.*?)</table_img>|<table_img\b[^>]*/?>",
+    re.IGNORECASE | re.DOTALL,
+)
+_IMG_TAG_RE = re.compile(r"</?img\b[^>]*>", re.IGNORECASE)
 
 # Sentinel marking "a figure sits here in reading order", used only while
 # assembling solution text (see pipeline.inline_solution_figures). The model's
@@ -77,6 +87,7 @@ _MATH_CLOSE_RE = re.compile(r"(?:\$\$|\\\])[ \t]*")
 # that *opens* a list item starts the next problem; all list/line-break tags are
 # flattened to spaces so none leak into the statement.
 _LI_OPEN_RE = re.compile(r"<li\b", re.IGNORECASE)
+_LI_BLOCK_RE = re.compile(r"<li\b[^>]*>(.*?)</li>", re.IGNORECASE | re.DOTALL)
 _LIST_TAG_RE = re.compile(r"</?(?:ol|ul|li)\b[^>]*>|<br\s*/?>", re.IGNORECASE)
 _POINT_VALUE_RE = re.compile(
     r"^(?:<(?:strong|b|em)\b[^>]*>\s*)?\[\s*(?:±\s*)?\d+\s*\]",
@@ -91,6 +102,10 @@ _POINT_VALUE_RE = re.compile(
 _ANSWER_UNIT_RE = re.compile(
     r"^(?:\$|[a-z][\w°²³.^${}/-]*|\d+)(?:\s+(?:\$|[a-z][\w°²³.^${}/-]*|\d+))*"
     r"\s*(?=[A-Z(]|$)"
+)
+_ANSWER_MARKER_RE = re.compile(
+    r"(?<!\S)(\d{1,3})\s*[.)]\s+(?:[*_]*\s*)?\$?\s*_{2,}",
+    re.IGNORECASE,
 )
 
 # Chars that legitimately repeat in layout (answer blanks, dotted leaders, rules).
@@ -126,6 +141,20 @@ def _is_runaway(text: str) -> bool:
     We normalize a slice wider than the window (stripping shrinks it) so the
     post-normalization tail is full-length.
     """
+    points = [
+        int(value)
+        for value in re.findall(
+            r"\bthen\s+to\s+point\s+(\d+)\b",
+            text[-config.NANONETS_LOOP_WINDOW :],
+            re.IGNORECASE,
+        )
+    ]
+    incrementing = 1
+    for previous, current in zip(points, points[1:]):
+        incrementing = incrementing + 1 if current == previous + 1 else 1
+        if incrementing >= config.NANONETS_SEQUENCE_LOOP_COUNT:
+            return True
+
     text = _TAG_ATTR_RE.sub(r"<\1\2>", text[-2 * config.NANONETS_REPEAT_WINDOW :])
     tail = text[-config.NANONETS_REPEAT_WINDOW :]
     probe = tail[-config.NANONETS_REPEAT_PROBE :]
@@ -403,6 +432,57 @@ def _clean_text_line(line: str) -> str:
     return _BLANK_RUN_RE.sub("", line).strip()
 
 
+def _answer_only_marker_tail(text: str) -> bool:
+    """Whether marker text is only a MATHCOUNTS answer blank and its unit."""
+    if not _BLANK_RUN_RE.search(text):
+        return False
+    tail = _BLANK_RUN_RE.sub(" ", text).strip("*_ ")
+    if re.fullmatch(r"\([^()]*\)", tail):
+        return True
+    tail = _ANSWER_UNIT_RE.sub("", tail, count=1).strip("*_ $")
+    return not tail.strip(",$;/ ")
+
+
+def _protect_table_images(markdown: str) -> str:
+    """Hide image tags inside tables from the page-level image tokenizer."""
+
+    def protect_table(match):
+        return _IMG_TAG_RE.sub(
+            lambda tag: (
+                "</table_img>"
+                if tag.group(0).lstrip().startswith("</")
+                else "<table_img>"
+            ),
+            match.group(0),
+        )
+
+    return _TABLE_BLOCK_RE.sub(protect_table, markdown)
+
+
+def _split_expected_markers(text: str, numbers: set[int], match_marker) -> str:
+    """Put packed statement markers on their own lines.
+
+    Older MATHCOUNTS pages put problems 1--14 in one table cell and the matching
+    answer blanks in another. The blank cell supplies the authoritative marker
+    numbers, which makes splitting the prose cell safe even when its questions
+    contain unrelated numeric literals.
+    """
+    if not numbers:
+        return text
+    starts = []
+    for match in re.finditer(
+        r"(?<!\S)(?=[*_#]*\d{1,3}[ \t]*[.)][ \t]+)", text
+    ):
+        pos = match.start()
+        probe = text[pos:].lstrip("*_# ")
+        marker = match_marker(probe)
+        if marker is not None and marker[0] in numbers:
+            starts.append(pos)
+    for pos in reversed(starts[1:]):
+        text = text[:pos].rstrip() + "\n" + text[pos:].lstrip()
+    return text
+
+
 def parse_layout(
     markdown: str,
     match_marker=None,
@@ -411,6 +491,7 @@ def parse_layout(
     ordered_list_markers=False,
     point_value_list_markers=False,
     strict_section_restarts=False,
+    consecutive_problem_markers=False,
     page_initial_point_restart=False,
 ):
     """Turn Nanonets markdown into an ordered list of items.
@@ -442,6 +523,8 @@ def parse_layout(
     """
     match_marker = match_marker or _match_marker
     markdown = _FURNITURE_RE.sub("", markdown)
+    if split_marker_table_rows:
+        markdown = _protect_table_images(markdown)
 
     # Split into alternating text / image tokens, preserving order.
     tokens = []  # ("text", str) | ("image", description)
@@ -510,6 +593,12 @@ def parse_layout(
             saw_heading = False
             return True
         elif last_raw is None or raw_num > last_raw:
+            if (
+                consecutive_problem_markers
+                and last_raw is not None
+                and raw_num != last_raw + 1
+            ):
+                return False
             flush()
             last_raw = raw_num
             max_raw = max(max_raw, raw_num)
@@ -528,10 +617,33 @@ def parse_layout(
         text = _TABLE_TAG_RE.sub("\n", chunk)
         text = _split_glued_markers(text, match_marker)
         pending_point_item = False
-        for raw in text.splitlines():
-            line = raw.strip()
-            if not line:
-                continue
+        lines = [raw.strip() for raw in text.splitlines() if raw.strip()]
+
+        # A whole answer column is sometimes emitted before its statement
+        # column ("1. ____", "2. ____", ...). Mark contiguous blank-only runs
+        # so none can advance the problem sequence. An isolated blank marker,
+        # however, often *is* the problem start with its statement on the next
+        # line (Target rounds), and must establish that problem number.
+        answer_only = []
+        for line in lines:
+            probe = line.lstrip("*_# ")
+            marker = match_marker(probe)
+            raw_tail = probe[marker[1] :].lstrip("* ") if marker is not None else ""
+            answer_only.append(
+                marker is not None and _answer_only_marker_tail(raw_tail)
+            )
+        answer_block = set()
+        run_start = None
+        for idx in range(len(answer_only) + 1):
+            active = idx < len(answer_only) and answer_only[idx]
+            if active and run_start is None:
+                run_start = idx
+            elif not active and run_start is not None:
+                if idx - run_start >= 2:
+                    answer_block.update(range(run_start, idx))
+                run_start = None
+
+        for line_index, line in enumerate(lines):
             if line.startswith("#") or (
                 line.startswith("**")
                 and (
@@ -578,9 +690,22 @@ def parse_layout(
             # line's "N. ____ unit" can be told apart from a real statement.
             probe = line.lstrip("*_# ")
             match = match_marker(probe)
+            marker_tail_raw = (
+                probe[match[1] :].lstrip("* ") if match is not None else ""
+            )
             marker_tail = (
                 probe[match[1] :].lstrip("*_ ") if match is not None else ""
             )
+            # A standalone answer line is furniture, including ``1. ____``.
+            # Test this *before* check_marker: raw problem 1 is otherwise
+            # interpreted as a permissive section restart and shifts every
+            # following problem number.
+            if match is not None and _answer_only_marker_tail(marker_tail_raw):
+                if line_index not in answer_block and (
+                    last_raw is None or match[0] > last_raw
+                ):
+                    check_marker(match[0])
+                continue
             if match is not None and check_marker(
                 match[0], has_point_value=bool(_POINT_VALUE_RE.match(marker_tail))
             ):
@@ -636,46 +761,163 @@ def parse_layout(
             return
         for row in rows:
             cells = _CELL_RE.findall(row)
-            first_cell = _TAG_RE.sub(" ", cells[0]).strip() if cells else ""
-            probe = first_cell.lstrip("*_# ")
-            m = match_marker(probe)
-            if m is not None and check_marker(m[0]):
-                # The statement and the answer blank each live in their own
-                # cell, but which column holds which varies by year: some print
-                # "N. ____ unit | <statement>", older rounds print the reverse,
-                # "<statement> | N. ____". So strip a leading marker from *every*
-                # cell (not just the first) and keep whatever text survives. A
-                # cell holding the answer blank is recognized by the blank rule
-                # it contains; the blank *and the unit that labels it* ("cm$^2$",
-                # a lone "$") are dropped, so only a real statement survives --
-                # whichever side it was on.
-                parts = []
-                for c in cells:
-                    cell = re.sub(r"\s+", " ", _TAG_RE.sub(" ", c)).strip()
-                    # Note the blank rule *before* stripping the marker: doing so
-                    # lstrips the underscores away too, so this is the last point
-                    # the answer-blank cell can be told apart from a statement.
-                    is_answer = bool(_BLANK_RUN_RE.search(cell))
-                    probe_cell = cell.lstrip("*_# ")
-                    cm = match_marker(probe_cell)
-                    if cm is not None:
-                        cell = probe_cell[cm[1] :].lstrip("*_ ")
-                    if is_answer:
-                        # Drop the unit that labeled the blank ("cm$^2$", a lone
-                        # "$"). Anything after it is a statement sharing the cell
-                        # (rare) and is kept.
-                        cell = _ANSWER_UNIT_RE.sub("", _clean_text_line(cell), count=1)
-                    cell = _clean_text_line(cell)
-                    if cell and not _POINTS_ONLY_RE.match(cell):
-                        parts.append(cell)
-                statement = " ".join(parts).strip()
-                if statement:
-                    buf.append(statement)
+            list_cells = [_LI_BLOCK_RE.findall(cell) for cell in cells]
+            answer_list_indexes = [
+                idx
+                for idx, entries in enumerate(list_cells)
+                if entries
+                and all(_BLANK_RUN_RE.search(_TAG_RE.sub(" ", entry)) for entry in entries)
+            ]
+            statement_list_indexes = [
+                idx
+                for idx, entries in enumerate(list_cells)
+                if entries and idx not in answer_list_indexes
+            ]
+            if (
+                answer_list_indexes
+                and statement_list_indexes
+                and len(list_cells[answer_list_indexes[0]])
+                == len(list_cells[statement_list_indexes[0]])
+            ):
+                # A few National Sprint pages omit the printed number column
+                # entirely and OCR the questions/answer blanks as two parallel
+                # ordered lists. The paired blank list proves that the other
+                # list is page-level problem structure, not an ordered list
+                # inside a single statement.
+                for entry in list_cells[statement_list_indexes[0]]:
+                    raw_num = (last_raw or 0) + 1
+                    if check_marker(raw_num):
+                        entry = _TABLE_IMG_RE.sub(" ", entry)
+                        text = re.sub(r"\s+", " ", _TAG_RE.sub(" ", entry)).strip()
+                        if text:
+                            buf.append(text)
+                continue
+
+            rendered = []
+            image_descriptions = []
+            for cell_html in cells:
+                image_descriptions.extend(
+                    desc.strip()
+                    for desc in _TABLE_IMG_RE.findall(cell_html)
+                    if desc and desc.strip()
+                )
+                without_images = _TABLE_IMG_RE.sub(" ", cell_html)
+                without_images = re.sub(
+                    r"<br\s*/?>", "\n", without_images, flags=re.IGNORECASE
+                )
+                rendered.append(_TAG_RE.sub(" ", without_images))
+
+            row_text = "\n".join(rendered)
+            answer_numbers = {
+                int(m.group(1)) for m in _ANSWER_MARKER_RE.finditer(row_text)
+            }
+            marker_numbers = []
+            for cell in rendered:
+                for line in cell.splitlines():
+                    probe = line.strip().lstrip("*_# ")
+                    marker = match_marker(probe)
+                    if marker is not None:
+                        marker_numbers.append(marker[0])
+            marker_numbers.extend(sorted(answer_numbers))
+
+            if marker_numbers:
+                unique_markers = sorted(set(marker_numbers))
+                normal_statement = False
+                for cell in rendered:
+                    for line in cell.splitlines():
+                        probe = line.strip().lstrip("*_# ")
+                        if not probe:
+                            continue
+                        marker = match_marker(probe)
+                        if marker is None:
+                            normal_statement = True
+                            break
+                        tail = probe[marker[1] :].lstrip("* ")
+                        if not _answer_only_marker_tail(tail):
+                            normal_statement = True
+                            break
+                    if normal_statement:
+                        break
+
+                # The common layout has exactly one problem per row. Establish
+                # that row's problem from either column, then strip the marker
+                # and answer blank before consuming its statement cell.
+                if len(unique_markers) == 1:
+                    number = unique_markers[0]
+                    accepted = check_marker(number)
+                    if not accepted and current != number:
+                        # A non-consecutive leading integer is a data value,
+                        # not a problem marker. Preserve the row as real table
+                        # content under the current problem.
+                        buf.append(
+                            re.sub(r"\s+", " ", f"<table>{row}</table>").strip()
+                        )
+                        continue
+                    wrote_text = False
+                    for cell in rendered:
+                        for line in cell.splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            probe = line.lstrip("*_# ")
+                            marker = match_marker(probe)
+                            if marker is not None:
+                                raw_tail = probe[marker[1] :].lstrip("* ")
+                                if _answer_only_marker_tail(raw_tail):
+                                    continue
+                                line = probe[marker[1] :].lstrip("*_ ")
+                            before_len = len(buf)
+                            consume_lines(line)
+                            wrote_text = wrote_text or len(buf) > before_len
+                    if not wrote_text and image_descriptions:
+                        text = re.sub(
+                            r"\s+", " ", _TAG_RE.sub(" ", image_descriptions[0])
+                        ).strip()
+                        if text:
+                            buf.append(text)
+                    continue
+
+                # The marker/blank column can be the only ordinary text when
+                # the model put the complete question in an image wrapper.
+                if image_descriptions and not normal_statement:
+                    number = marker_numbers[0]
+                    if check_marker(number):
+                        text = re.sub(
+                            r"\s+", " ", _TAG_RE.sub(" ", image_descriptions[0])
+                        ).strip()
+                        if text:
+                            buf.append(text)
+                    continue
+
+                # A marker row is problem-list structure, not a data table.
+                # Feed each cell through the normal line parser so <br>-packed
+                # questions and standalone answer blanks get identical handling
+                # to plain OCR text. When a whole cell was emitted as one line,
+                # the sibling answer column tells us which inline numbers are
+                # genuine problem markers.
+                before = len(buf)
+                for cell in rendered:
+                    cell = _split_expected_markers(cell, answer_numbers, match_marker)
+                    consume_lines(cell)
+
+                # If no ordinary cell supplied statement prose, recover a
+                # question the OCR incorrectly wrapped in <img>. Ignore such
+                # descriptions when normal prose exists; they then only
+                # duplicate a diagram or an already-transcribed statement.
+                added = "\n".join(buf[before:]).strip()
+                if not added:
+                    for description in image_descriptions:
+                        text = re.sub(r"\s+", " ", _TAG_RE.sub(" ", description)).strip()
+                        if text:
+                            buf.append(text)
+                            break
                 continue
             # A non-marker row is real tabular data belonging to the current
             # problem -- kept verbatim -- unless it is nothing but a point-value
             # cell ("<td>①</td>"), a standalone furniture row emitted beside the
             # problems, which is dropped.
+            if image_descriptions and not row_text.strip():
+                continue
             row_text = _TAG_RE.sub(" ", row).strip()
             if row_text and _POINTS_ONLY_RE.match(row_text):
                 continue
@@ -684,6 +926,21 @@ def parse_layout(
     for kind, payload in tokens:
         if kind == "image":
             flush()
+            probe = payload.lstrip("*_# ")
+            marker = match_marker(probe)
+            if (
+                marker is not None
+                and marker[0] == current
+                and not any(
+                    item["kind"] == "text" and item["problem"] == current
+                    for item in items
+                )
+            ):
+                recovered = probe[marker[1] :].lstrip("*_ ")
+                if recovered:
+                    items.append(
+                        {"kind": "text", "problem": current, "text": recovered}
+                    )
             items.append({"kind": "image", "problem": current, "text": payload})
             continue
 

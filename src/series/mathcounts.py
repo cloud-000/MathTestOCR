@@ -57,6 +57,19 @@ _LEADING_UNIT_RE = re.compile(r"^(?:[a-z][\w°²³./-]*\s+){1,3}(?=[A-Z(])")
 # exact instructional text regardless of year/level, so a plain substring
 # check on the PDF's own text layer is enough -- no OCR needed to skip them.
 _SKIP_PAGE_PHRASES = ("do not begin until you are instructed", "forms of answers")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_CODE_FENCE_RE = re.compile(r"^\s*```(?:html)?\s*$", re.IGNORECASE | re.MULTILINE)
+_PRINTING_FOOTER_RE = re.compile(
+    r"\n\s*(?:<img\b[^>]*>.*?</img>\s*)?"
+    r"Printing of this competition is underwritten by\b.*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+_TARGET_ROUND_RE = re.compile(r"\bTarget\s+Round\b", re.IGNORECASE)
+_NUMBERED_STATEMENT_RE = re.compile(
+    r"(?:^|\n|<t[dh]\b[^>]*>)\s*(\d{1,2})\s*[.)]\s+",
+    re.IGNORECASE,
+)
+_PIPE_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 
 
 class MathcountsSeries(Series):
@@ -70,17 +83,26 @@ class MathcountsSeries(Series):
     def layout_options(self):
         """Opt into the MATHCOUNTS-tuned nanonets figure/table heuristics.
 
-        MATHCOUNTS pages need all three (see `config.LayoutOptions`): a recurring
+        MATHCOUNTS pages need these hooks (see `config.LayoutOptions`): a recurring
         whole-page false-positive Picture box (filtered by area), problems packed
         into a single answer-blank ``<table>`` (marker rows unpacked to text), and
         faint number boxes that sometimes miss detection and drop a problem's
-        left-margin start (recovered by the gap-based fallback). Other series keep
-        the conservative base defaults.
+        left-margin start (recovered by the gap-based fallback). Genuine figures
+        frequently extend into the right or bottom page bands, so MATHCOUNTS must
+        not use the positional furniture filters. Target divider/logo pages are
+        suppressed by ``clean_statement_markdown`` instead. Other series keep the
+        conservative base defaults.
         """
         return config.LayoutOptions(
             max_picture_area_frac=config.NANONETS_MAX_PICTURE_AREA_FRAC,
             gap_based_picture_fallback=True,
             split_marker_table_rows=True,
+            prefer_inline_picture_tags=True,
+            drop_sponsor_watermark_picture=True,
+            # Numbered package/condition lists inside a problem must not be
+            # mistaken for a new section merely because they restart at 1.
+            strict_section_restarts=True,
+            consecutive_problem_markers=True,
         )
 
     def skip_page(self, text):
@@ -89,6 +111,52 @@ class MathcountsSeries(Series):
         # (including newlines) to a single space before matching.
         collapsed = re.sub(r"\s+", " ", text).strip().lower()
         return any(phrase in collapsed for phrase in _SKIP_PAGE_PHRASES)
+
+    def clean_statement_markdown(self, page_index, markdown):
+        """Remove scanned score sheets and OCR-only statement furniture."""
+        collapsed = re.sub(r"\s+", " ", markdown).strip().lower()
+        if any(phrase in collapsed for phrase in _SKIP_PAGE_PHRASES):
+            return ""
+        markdown = _CODE_FENCE_RE.sub("", markdown)
+        # The model occasionally emits a Markdown image path instead of the
+        # requested <img> tag. DETR supplies the authoritative local crop, so
+        # keeping this invented/broken path only duplicates the figure.
+        markdown = _MARKDOWN_IMAGE_RE.sub("", markdown)
+        # Older National Target sheets print a sponsor logo and underwriting
+        # line after the questions. The crop is removed geometrically by the
+        # footer band; remove the corresponding OCR text here.
+        markdown = _PRINTING_FOOTER_RE.sub("", markdown)
+        # Some responses use a Markdown pipe table instead of HTML. Convert
+        # answer-blank rows to the same plain ``N. statement`` form consumed by
+        # parse_layout; genuine data-table rows have no numbered blank first
+        # cell and remain untouched.
+        lines = []
+        for line in markdown.splitlines():
+            if _PIPE_TABLE_ROW_RE.match(line):
+                cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+                if len(cells) >= 2:
+                    marker = re.match(r"^(\d{1,2})\s*[.)]\s+.*_{2,}", cells[0])
+                    if marker is not None:
+                        lines.append(f"{marker.group(1)}. {' | '.join(cells[1:])}")
+                        continue
+            lines.append(line)
+        return "\n".join(lines)
+
+    def validate_statement_markdown(self, page_index, markdown):
+        """Reject a Target problem sheet when OCR silently loses half its pair."""
+        collapsed = re.sub(r"\s+", " ", markdown).strip().lower()
+        if any(phrase in collapsed for phrase in _SKIP_PAGE_PHRASES):
+            return True  # accepted, then intentionally suppressed by cleanup
+        markers = {int(m.group(1)) for m in _NUMBERED_STATEMENT_RE.finditer(markdown)}
+        # No valid MATHCOUNTS problem page in the cached corpus contains exactly
+        # one numbered statement; Target pages always contain a pair, and the
+        # other rounds contain larger batches. This also catches a truncated
+        # response that lost the footer identifying it as a Target page.
+        if len(markers) == 1:
+            return False
+        if _TARGET_ROUND_RE.search(markdown):
+            return len(markers) >= 2
+        return True
 
     def discover_tests(self, data_dir):
         """One test per whitelisted ``<year>/<level>/<round>.pdf``."""
