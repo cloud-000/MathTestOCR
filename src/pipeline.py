@@ -496,7 +496,15 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
     return groups
 
 
-def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=None):
+def _ocr_page(
+    client,
+    image,
+    base_temp,
+    cache=None,
+    cache_key=None,
+    mask_boxes=None,
+    validate=None,
+):
     """Whole-page OCR with runaway recovery; returns the page markdown.
 
     Nanonets' decoding can get stuck in a verbatim loop on a grid/dense figure
@@ -526,7 +534,11 @@ def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=N
         # may have stored a loop it couldn't yet detect (nanonets._is_runaway has
         # since learned new loop shapes); serving it would silently drop every
         # problem below the loop. Re-OCR heals it and re-caches a clean pass.
-        if hit is not None and not nanonets_mod._is_runaway(hit):
+        if (
+            hit is not None
+            and not nanonets_mod._is_runaway(hit)
+            and (validate is None or validate(hit))
+        ):
             if config.PRINT_TIME:
                 from datetime import datetime
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Page {cache_key} found in cache.")
@@ -539,7 +551,7 @@ def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=N
             from datetime import datetime
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Calling OCR for page {cache_key or 'unknown'} (temp={temp})...")
         markdown, runaway = client.parse_page(image, temp)
-        if not runaway:
+        if not runaway and (validate is None or validate(markdown)):
             break
     else:
         if mask_boxes:
@@ -550,7 +562,8 @@ def _ocr_page(client, image, base_temp, cache=None, cache_key=None, mask_boxes=N
             markdown, runaway = client.parse_page(
                 image, temps[-1], mask_boxes=mask_boxes
             )
-    if cache is not None and cache_key is not None and not runaway:
+    valid = validate is None or validate(markdown)
+    if cache is not None and cache_key is not None and not runaway and valid:
         cache.put(cache_key, markdown)
     return markdown
 
@@ -568,6 +581,8 @@ def process_image_markdown(
     cache=None,
     layout=None,
     carry=None,
+    clean_markdown=None,
+    validate_markdown=None,
 ):
     """Whole-page OCR via the nanonets engine; DETR supplies the image crops.
 
@@ -634,7 +649,10 @@ def process_image_markdown(
         # faint extras include page-spanning false positives that must never
         # blank the whole page on the masking rung.
         mask_boxes=_figure_mask_boxes(detections),
+        validate=validate_markdown,
     )
+    if clean_markdown is not None:
+        markdown = clean_markdown(markdown)
     print(f"[{engine}] Whole-page OCR done.")
     items = nanonets_mod.parse_layout(
         markdown,
@@ -642,6 +660,8 @@ def process_image_markdown(
         split_marker_table_rows=layout.split_marker_table_rows,
         start_problem=carry,
         ordered_list_markers=layout.ordered_list_markers,
+        point_value_list_markers=layout.point_value_list_markers,
+        strict_section_restarts=layout.strict_section_restarts,
     )
 
     print(f"[{engine}] Assembling problems...")
@@ -697,7 +717,17 @@ def process_image_markdown(
     return [problems[n] for n in sorted(problems)], detections, groups
 
 
-def process_test(page_paths, engine, model, threshold=None, match=None, cache=None, layout=None):
+def process_test(
+    page_paths,
+    engine,
+    model,
+    threshold=None,
+    match=None,
+    cache=None,
+    layout=None,
+    clean_page=None,
+    validate_page=None,
+):
     """Parse every page of a multi-page test and merge problems by number.
 
     A test (e.g. a USAMTS PDF rendered to page PNGs) may span several pages, with
@@ -717,11 +747,27 @@ def process_test(page_paths, engine, model, threshold=None, match=None, cache=No
     """
     merged = {}  # number -> Problem
     carry = None  # nanonets: problem in progress at the top of the next page
-    for path in page_paths:
+    for page_index, path in enumerate(page_paths):
         if engine in config.MARKDOWN_ENGINES:
             thr = threshold if threshold is not None else config.NANONETS_DETECT_THRESHOLD
             problems, _, _ = process_image_markdown(
-                path, model, thr, match_marker=match, cache=cache, layout=layout, carry=carry
+                path,
+                model,
+                thr,
+                match_marker=match,
+                cache=cache,
+                layout=layout,
+                carry=carry,
+                clean_markdown=(
+                    (lambda markdown, i=page_index: clean_page(i, markdown))
+                    if clean_page is not None
+                    else None
+                ),
+                validate_markdown=(
+                    (lambda markdown, i=page_index: validate_page(i, markdown))
+                    if validate_page is not None
+                    else None
+                ),
             )
             page_numbers = [p.number for p in problems]
             if page_numbers:
@@ -1005,7 +1051,23 @@ def process_solution_document(
         # Detection runs before OCR (it re-runs every page regardless) so its
         # figure boxes are available to mask a looping region on the final
         # runaway-recovery rung (see _ocr_page).
-        detections = detect.detect(image, thr)
+        solution_eq_filter = (
+            layout.solution_equation_text_overlap
+            and layout.equation_text_overlap is not None
+        )
+        scan_thr = min(thr, config.EQUATION_TEXT_MIN_SCORE) if solution_eq_filter else thr
+        scanned = detect.detect(image, scan_thr)
+        detections = [d for d in scanned if d["score"] >= thr]
+        equation_text_boxes = (
+            [
+                d["box"]
+                for d in scanned
+                if d["label"] in config.TEXT_LABELS
+                and d["score"] >= config.EQUATION_TEXT_MIN_SCORE
+            ]
+            if solution_eq_filter
+            else None
+        )
         markdown = _ocr_page(
             client,
             image,
@@ -1026,6 +1088,8 @@ def process_solution_document(
             # solution document's own "N." markers drive figure assignment, so
             # it stays at the default here (avoid mis-splitting a solution's
             # genuine ordered list into spurious problems).
+            point_value_list_markers=layout.point_value_list_markers,
+            strict_section_restarts=layout.strict_section_restarts,
         )
         pics = _sorted_pictures(
             detections,
@@ -1035,13 +1099,8 @@ def process_solution_document(
             layout.right_margin_picture_frac,
             layout.footer_picture_frac,
             layout.min_picture_height_frac,
-            # equation_text_overlap is intentionally not applied here: it needs the
-            # low-threshold companion Text scan the statement path runs (this path
-            # detects at the plain threshold), and a solution's genuine diagrams are
-            # often wide (a labeled strip) and sit amid prose, so the wide-over-text
-            # test would drop real figures. The furniture that reaches this path --
-            # the running-header/title banner relocated to fill a short last page's
-            # right-hand whitespace -- is fenced off by right_margin_picture_frac.
+            layout.equation_text_overlap if solution_eq_filter else None,
+            equation_text_boxes,
         )
         # pdf_io names rendered pages "page_<pdf page number>.png".
         pdf_index = int(Path(path).stem.split("_")[1]) - 1 if doc is not None else None

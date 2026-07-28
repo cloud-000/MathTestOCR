@@ -226,7 +226,15 @@ def _parse_one_test(series, test, engine, model, threshold, cache=None, layout=N
     with tempfile.TemporaryDirectory(prefix="comp-ocr-") as workdir:
         pages = series.test_pages(test, workdir)
         problems = process_test(
-            pages, engine, model, threshold, match, cache=cache, layout=layout
+            pages,
+            engine,
+            model,
+            threshold,
+            match,
+            cache=cache,
+            layout=layout,
+            clean_page=series.clean_statement_markdown,
+            validate_page=series.validate_statement_markdown,
         )
     return series.postprocess(problems)
 
@@ -435,6 +443,14 @@ def _scrape_solutions(args, series, test, sol, dest, model):
                 }
                 for p in problems
             }
+    statements = {}
+    statement_path = dest / "problems.json"
+    if statement_path.exists():
+        try:
+            statements = json.loads(statement_path.read_text())
+        except (OSError, ValueError):
+            statements = {}
+    solutions = series.postprocess_solutions(solutions, statements)
     # Place each figure crop inline in its solution text. Crops are referenced
     # by a path relative to the output root (out/<series>/<test>/), so the marker
     # resolves when out/ is served as the document root.

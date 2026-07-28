@@ -78,6 +78,10 @@ _MATH_CLOSE_RE = re.compile(r"(?:\$\$|\\\])[ \t]*")
 # flattened to spaces so none leak into the statement.
 _LI_OPEN_RE = re.compile(r"<li\b", re.IGNORECASE)
 _LIST_TAG_RE = re.compile(r"</?(?:ol|ul|li)\b[^>]*>|<br\s*/?>", re.IGNORECASE)
+_POINT_VALUE_RE = re.compile(
+    r"^(?:<(?:strong|b|em)\b[^>]*>\s*)?\[\s*(?:±\s*)?\d+\s*\]",
+    re.IGNORECASE,
+)
 # The unit that labels an answer blank, once the blank rule itself is gone:
 # a leading run of currency signs / short lowercase-or-number tokens up to
 # where the real statement starts (a capital letter, an opening paren, or the
@@ -399,8 +403,15 @@ def _clean_text_line(line: str) -> str:
     return _BLANK_RUN_RE.sub("", line).strip()
 
 
-def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False,
-                 start_problem=None, ordered_list_markers=False):
+def parse_layout(
+    markdown: str,
+    match_marker=None,
+    split_marker_table_rows=False,
+    start_problem=None,
+    ordered_list_markers=False,
+    point_value_list_markers=False,
+    strict_section_restarts=False,
+):
     """Turn Nanonets markdown into an ordered list of items.
 
     Each item is a dict ``{"kind": "text"|"image", "problem": int|None, "text": str}``
@@ -470,7 +481,11 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
         nonlocal current, last_raw, max_raw, offset, saw_heading
         is_restart = False
         if last_raw is not None and raw_num <= last_raw:
-            if saw_heading or raw_num == 1 or (start_problem is not None and raw_num < start_problem):
+            permissive_restart = not strict_section_restarts and (
+                raw_num == 1
+                or (start_problem is not None and raw_num < start_problem)
+            )
+            if saw_heading or permissive_restart:
                 is_restart = True
 
         if is_restart:
@@ -499,6 +514,7 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
         nonlocal current, last_raw, saw_heading
         text = _TABLE_TAG_RE.sub("\n", chunk)
         text = _split_glued_markers(text, match_marker)
+        pending_point_item = False
         for raw in text.splitlines():
             line = raw.strip()
             if not line:
@@ -523,6 +539,24 @@ def parse_layout(markdown: str, match_marker=None, split_marker_table_rows=False
                     raw_num = (last_raw or 0) + 1
                     check_marker(raw_num)
                 line = _LIST_TAG_RE.sub(" ", line).strip()
+                if not line:
+                    continue
+            elif point_value_list_markers:
+                # HMMT Guts pages sometimes lose the printed number column and
+                # retain only "<li>[7] statement</li>". Defer accepting the item
+                # until its first content is visibly a point value; <li> and
+                # "[7]" may be on the same line or consecutive lines.
+                opens_item = bool(_LI_OPEN_RE.search(line))
+                if opens_item:
+                    pending_point_item = True
+                probe_item = _LIST_TAG_RE.sub(" ", line).strip()
+                if pending_point_item and _POINT_VALUE_RE.match(probe_item):
+                    raw_num = (last_raw or 0) + 1
+                    check_marker(raw_num)
+                    pending_point_item = False
+                elif pending_point_item and probe_item and not opens_item:
+                    pending_point_item = False
+                line = probe_item
                 if not line:
                     continue
             # Markers can arrive markdown-emphasized ("**1/1/12.**", "*26.*",

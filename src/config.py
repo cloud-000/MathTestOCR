@@ -362,6 +362,18 @@ class LayoutOptions:
     # by default: a series whose statements contain genuine ordered lists would
     # see each list item mis-read as a new problem. Only Mandelbrot opts in.
     ordered_list_markers: bool = False
+    # Treat only <ol>/<li> items whose first content is a bracketed point value
+    # ("<li>[7] ...") as sequential problem starts. HMMT's older Guts OCR often
+    # omits the printed problem-number column but retains each statement as one
+    # point-valued list item. Unlike ordered_list_markers, this does not split a
+    # genuine ordered list inside a problem unless its items also begin with a
+    # point value.
+    point_value_list_markers: bool = False
+    # Accept a decreasing/restarted problem number only after a visible section
+    # heading. HMMT team/power rounds contain numbered procedures and case lists
+    # inside problems; the permissive default would mistake an internal "1."
+    # for a new section.
+    strict_section_restarts: bool = False
     # Take each problem's start position from its left-margin heading box alone
     # (see config.HEADER_LABELS), ignoring the statement/body text below it. On
     # by default a problem whose number sits on its own heading line (e.g. Purple
@@ -383,6 +395,11 @@ class LayoutOptions:
     # A series opts in when its problems interleave prose and figures and the
     # reading order matters (e.g. MPfG). See pipeline.inline_problem_figures.
     inline_figures: bool = False
+    # Apply equation_text_overlap on solution pages too, with a companion
+    # low-confidence text scan. Off by default because wide labeled diagrams in
+    # worked solutions are common; a series opts in only after checking its
+    # diagram corpus against the filter.
+    solution_equation_text_overlap: bool = False
 
 
 # --- Detection ---

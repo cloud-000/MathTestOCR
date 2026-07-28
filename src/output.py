@@ -41,7 +41,11 @@ def write_problems(problems, dest):
     # figure that moved to a different problem doesn't leave a stale crop behind
     # (e.g. an old problem_6_image_1.png after it's reassigned to problem 3).
     for stale in out.glob("problem_*_image_*.png"):
-        stale.unlink()
+        # The broad statement-image pattern also matches
+        # problem_<n>_solution_<k>_image_<j>.png. Those crops belong to a
+        # separate regeneration pass and must survive statement-only parses.
+        if "_solution_" not in stale.name:
+            stale.unlink()
     data = {}
     for p in problems:
         text = p.text

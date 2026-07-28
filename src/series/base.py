@@ -129,6 +129,27 @@ class Series:
         """
         return False
 
+    def clean_statement_markdown(self, page_index: int, markdown: str) -> str:
+        """Per-page cleanup applied before statement problem tagging.
+
+        This is the statement-side counterpart of ``clean_solution_markdown``:
+        a series may remove running headers, answer-form furniture, or OCR
+        wrapper markup that would otherwise be mistaken for problem content or
+        influence the strictly-increasing marker guard. The raw OCR remains in
+        the cache; only the text handed to ``parse_layout`` is cleaned.
+        """
+        return markdown
+
+    def validate_statement_markdown(self, page_index: int, markdown: str) -> bool:
+        """Return whether a statement page OCR is complete enough to cache/use.
+
+        The default accepts every non-runaway transcription. A born-digital
+        series may compare it with cheap page metadata recorded by
+        ``test_pages`` and force the OCR retry ladder when a clean-looking
+        response silently omitted problems.
+        """
+        return True
+
     # --- Numbering quirks ------------------------------------------------
     def match_marker(self):
         """Return a series-specific marker matcher, or None to use the default.
@@ -212,7 +233,11 @@ class Series:
         opts = self.layout_options()
         grouped: dict[int, list[str]] = {}
         for item in parse_layout(
-            full_text, self.match_marker(), split_marker_table_rows=opts.split_marker_table_rows
+            full_text,
+            self.match_marker(),
+            split_marker_table_rows=opts.split_marker_table_rows,
+            point_value_list_markers=opts.point_value_list_markers,
+            strict_section_restarts=opts.strict_section_restarts,
         ):
             if item["problem"] is None:
                 continue
@@ -224,6 +249,16 @@ class Series:
                 # pipeline.inline_solution_figures).
                 grouped.setdefault(item["problem"], []).append(FIGURE_PLACEHOLDER)
         return {n: "\n".join(parts) for n, parts in grouped.items()}
+
+    def postprocess_solutions(self, solutions: dict, statements: dict) -> dict:
+        """Final series-specific cleanup with parsed statements available.
+
+        Most series can segment worked solutions using printed labels alone.
+        A series whose solution PDFs inconsistently omit those labels may use
+        the authoritative parsed statement map to remove a verbatim restatement
+        without teaching the shared pipeline any competition-specific prose.
+        """
+        return solutions
 
     def solution_index_marker(self, text: str):
         """Return a solution index from a solution-block heading, or None.
