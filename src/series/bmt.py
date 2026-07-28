@@ -25,14 +25,15 @@ from typing_extensions import override
 
 from .. import config
 from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
-from .base import Series, Test
+from .base import Series, Test, numbered_answers_in_line
+from .smt import _boxed_answer
 
 # Labels arrive markdown-emphasized from the OCR ("**Answer:** 45",
 # "**Answer: 89**", "**Solution:** ..."), so each pattern tolerates leading
 # emphasis/heading chars and (for the label itself) a "**" between the word and
 # its colon. The captured value is cleaned by _clean_answer.
 _EMPH = r"[*_#]{0,3}"
-_ANSWER_RE = re.compile(rf"^\s*{_EMPH}\s*Answer\b\s*{_EMPH}\s*:\s*(.*)$", re.IGNORECASE)
+_ANSWER_RE = re.compile(rf"^\s*{_EMPH}\s*(?:Answer|Ans)\b\s*{_EMPH}\s*:?\s*(.*)$", re.IGNORECASE)
 _PROPOSED_RE = re.compile(rf"^\s*{_EMPH}\s*Proposed\s+by\b", re.IGNORECASE)
 _SOLUTION_RE = re.compile(
     rf"^\s*{_EMPH}\s*Solution(?:\s+\d+)?\b\s*{_EMPH}\s*:?\s*(.*)$", re.IGNORECASE
@@ -109,14 +110,41 @@ class BmtSeries(Series):
 
     @override
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:
-        """Extract the explicit ``Answer:`` value from each problem block."""
+        """Extract answers from HTML tables, explicit Answer/Ans lines, boxed values, or numbered lists."""
+        full_text = "\n\n".join(pages_markdown)
         answers = {}
-        for item in parse_layout("\n\n".join(pages_markdown), self.match_marker()):
+
+        # 1. HTML answer key tables (e.g., Speed Round answer keys)
+        td_matches = re.findall(
+            r"<td>\s*(\d+)\s*</td>\s*<td>\s*(.*?)\s*</td>", full_text, re.I | re.S
+        )
+        if td_matches:
+            for q_str, ans_str in td_matches:
+                num = int(q_str)
+                clean_ans = _clean_answer(ans_str)
+                if clean_ans:
+                    answers[num] = clean_ans
+            if len(answers) >= 5:
+                return answers
+            answers = {}
+
+        # 2. Problem blocks via parse_layout
+        for item in parse_layout(full_text, self.match_marker()):
             if item["problem"] is None or item["kind"] != "text":
                 continue
             answer = _answer_value(item["text"])
             if answer and answer.upper() != "N/A":
                 answers[item["problem"]] = answer
+
+        # 3. Line-by-line numbered lists (standalone answer key documents)
+        if not answers:
+            for line in full_text.splitlines():
+                leading, pairs = numbered_answers_in_line(line)
+                for num, ans_str in pairs:
+                    clean_ans = _clean_answer(ans_str)
+                    if clean_ans:
+                        answers[num] = clean_ans
+
         return answers
 
 
@@ -136,7 +164,7 @@ def _answer_value(block: str) -> str:
             if following.strip():
                 return _clean_answer(following)
         return ""
-    return ""
+    return _boxed_answer(block) or ""
 
 
 def _solution_body(block: str) -> str:
