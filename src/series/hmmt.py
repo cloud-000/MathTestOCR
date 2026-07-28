@@ -45,6 +45,13 @@ _SOLUTION_RE = re.compile(
 _PREFIXED_MARKER_RE = re.compile(r"^\s*Problem\s+[A-Za-z]{1,3}\s*(\d+)\b", re.IGNORECASE)
 # OCR sometimes renders \boxed{X} as a <box>X</box> tag; both are answer boxes.
 _BOX_TAG_RE = re.compile(r"<box>\s*(.*?)\s*</box>", re.I | re.S)
+_INLINE_MATH_RE = re.compile(r"\${1,2}.*?\${1,2}")
+_LATEX_COMMAND_RE = re.compile(r"\\[A-Za-z]+")
+_PROSE_WORD_RE = re.compile(r"[A-Za-z]{2,}")
+_LEADING_NUMBER_RE = re.compile(
+    r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:\s*/\s*[+-]?\d+(?:\.\d+)?)?"
+)
+_ANSWER_CHECKBOXES = ("☐", "☑")
 _LEADING_TAG_RE = re.compile(
     r"^\s*(?:<(?:p|strong|b|em|span)\b[^>]*>\s*)+", re.IGNORECASE
 )
@@ -438,6 +445,16 @@ def _group_blocks(full_text: str, match) -> dict:
 
 
 def _answer_value(block: str) -> str:
+    """Return an explicit, standalone answer or ``""`` for the LLM fallback.
+
+    Some HMMT solution PDFs put the answer and its proof in one paragraph.
+    Whole-page OCR consequently emits lines such as ``Answer: 64 Each term
+    ...``. Treating the complete tail as the answer pollutes
+    ``problem_answer.json`` and, worse, can preserve a malformed OCR box (the
+    2008 November Guts solution for problem 24 loses its denominator). Only
+    compact answer-like tails are authoritative; prose-bearing tails fail soft
+    so ``parse_answers`` can ask ``answer_llm`` to read the full block.
+    """
     lines = block.splitlines()
     for index, line in enumerate(lines):
         match = _ANSWER_RE.match(line)
@@ -445,15 +462,53 @@ def _answer_value(block: str) -> str:
             continue
         inline = match.group(1).strip()
         if inline:
-            return inline
+            return _explicit_answer_prefix(inline)
         for following in lines[index + 1 :]:
             if _PROPOSED_RE.match(following) or _SOLUTION_RE.match(following):
                 break
             if following.strip():
-                return following.strip()
+                return _explicit_answer_prefix(following.strip())
         return ""
     # No explicit "Answer:" line -- fall back to the boxed final answer.
     return _boxed_answer(block) or ""
+
+
+def _is_standalone_answer(value: str) -> bool:
+    """Whether an ``Answer:`` tail contains a value rather than value + proof."""
+    if not value or value.startswith(_ANSWER_CHECKBOXES):
+        return False
+
+    # Ignore mathematical content while looking for natural-language prose.
+    # This preserves arbitrarily rich LaTeX answers while rejecting flattened
+    # explanations such as "3 Substitute x ..." and "5.85086 Let the ...".
+    prose = _INLINE_MATH_RE.sub(" ", value)
+    prose = _LATEX_COMMAND_RE.sub(" ", prose)
+    return len(_PROSE_WORD_RE.findall(prose)) <= 1
+
+
+def _explicit_answer_prefix(value: str) -> str:
+    """Recover an unambiguous value prefix; reject the rest for LLM extraction."""
+    if _is_standalone_answer(value):
+        return _boxed_answer(value) or value.strip(" $")
+    if not value or value.startswith(_ANSWER_CHECKBOXES):
+        return ""
+
+    # A leading unboxed math span is an answer followed by flattened prose.
+    # Do not trust a boxed prefix in this situation: Nanonets can crop a stacked
+    # fraction inside the box (2008 November Guts problem 24).
+    math = _INLINE_MATH_RE.match(value)
+    if math is not None and r"\boxed" not in math.group(0):
+        return math.group(0).strip("$").strip()
+
+    # The same flattening commonly produces "64 Each term ..." or
+    # "5.85086 Let ...". Keep the numeric prefix unless it is visibly only the
+    # first member of a compound answer ("3 and 5 ...").
+    number = _LEADING_NUMBER_RE.match(value)
+    if number is not None:
+        remainder = value[number.end() :].lstrip()
+        if not re.match(r"^(?:and|or)\b", remainder, re.IGNORECASE):
+            return number.group(0)
+    return ""
 
 
 def _iter_boxes(text: str):
