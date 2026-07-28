@@ -407,6 +407,11 @@ class LayoutOptions:
     # worked solutions are common; a series opts in only after checking its
     # diagram corpus against the filter.
     solution_equation_text_overlap: bool = False
+    # Drop a compact solution-page Picture when it encloses born-digital text
+    # printed on the same line as "Answer:". Layout detectors sometimes treat
+    # a boxed numeric answer as a figure; the text-line check distinguishes it
+    # from a genuinely small diagram immediately below the answer.
+    solution_answer_box_filter: bool = False
 
 
 # --- Detection ---

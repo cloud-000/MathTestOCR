@@ -178,6 +178,60 @@ def _box_area(box):
     return max(0, x1 - x0) * max(0, y1 - y0)
 
 
+def _drop_solution_answer_boxes(pics, pdf_page, image):
+    """Drop compact Pictures enclosing text on a born-digital ``Answer:`` row.
+
+    A boxed answer has figure-like borders, so DETR can label it Picture even
+    though the PDF text layer still exposes the value inside. Requiring that
+    enclosed word to share ``Answer:``'s PDF text block and rendered row avoids
+    size-based filtering of compact diagrams on the following solution lines.
+    """
+    words = pdf_page.get_text("words")
+    if not words or pdf_page.rect.width <= 0 or pdf_page.rect.height <= 0:
+        return pics
+    sx = image.width / pdf_page.rect.width
+    sy = image.height / pdf_page.rect.height
+    answer_words = [
+        word
+        for word in words
+        if word[4].strip().rstrip(":").casefold() == "answer"
+    ]
+    if not answer_words:
+        return pics
+
+    def shares_answer_row(word):
+        for answer in answer_words:
+            if word[5] != answer[5] or word[0] < answer[2]:
+                continue
+            overlap = max(0, min(word[3], answer[3]) - max(word[1], answer[1]))
+            min_height = min(word[3] - word[1], answer[3] - answer[1])
+            if min_height > 0 and overlap / min_height >= 0.5:
+                return True
+        return False
+
+    value_boxes = [
+        (word[0] * sx, word[1] * sy, word[2] * sx, word[3] * sy)
+        for word in words
+        if word[4].strip().rstrip(":").casefold() != "answer"
+        and shares_answer_row(word)
+    ]
+    max_width = image.width * 0.30
+    max_height = image.height * 0.04
+
+    def is_answer_box(pic):
+        box = pic["box"]
+        width, height = box[2] - box[0], box[3] - box[1]
+        if width > max_width or height > max_height:
+            return False
+        return any(
+            box[0] <= (value[0] + value[2]) / 2 <= box[2]
+            and box[1] <= (value[1] + value[3]) / 2 <= box[3]
+            for value in value_boxes
+        )
+
+    return [pic for pic in pics if not is_answer_box(pic)]
+
+
 def _contained_frac(inner, outer):
     """Fraction of `inner`'s area that lies inside `outer`."""
     ix0, iy0 = max(inner[0], outer[0]), max(inner[1], outer[1])
@@ -1106,6 +1160,8 @@ def process_solution_document(
         )
         # pdf_io names rendered pages "page_<pdf page number>.png".
         pdf_index = int(Path(path).stem.split("_")[1]) - 1 if doc is not None else None
+        if pics and doc is not None and layout.solution_answer_box_filter:
+            pics = _drop_solution_answer_boxes(pics, doc[pdf_index], image)
         if pics and doc is not None and figure_floor is not None:
             floor = figure_floor(doc[pdf_index], image)
             if floor is not None:

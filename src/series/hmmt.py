@@ -288,6 +288,7 @@ class HmmtSeries(Series):
             page_initial_point_restart=True,
             equation_text_overlap=0.3,
             solution_equation_text_overlap=True,
+            solution_answer_box_filter=True,
         )
 
     @override
