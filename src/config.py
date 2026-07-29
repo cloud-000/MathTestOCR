@@ -245,6 +245,14 @@ EQUATION_PICTURE_MIN_ASPECT = 2.5
 # below the main text-detection threshold.
 EQUATION_TEXT_MIN_SCORE = 0.4
 
+# A vector drawing this much inside a Picture box makes it a real figure for the
+# text_layer_equation_coverage filter, whatever its glyph coverage. Display
+# equations in the measured corpora draw nothing inside their box (TeX fraction
+# rules and \boxed frames do not surface as page drawings there), while every
+# genuine figure -- including grids of numbers, whose glyph coverage can rival an
+# equation's -- draws its rules and edges.
+TEXT_LAYER_DRAWING_FRAC = 0.5
+
 # --- Point-marker row anchors (opt-in LayoutOptions fallback) ---
 # Mandelbrot's point-value circles / ballot boxes are near-black, roughly
 # square, and about 2.7% of the page height at every source resolution. The
@@ -338,6 +346,20 @@ class LayoutOptions:
     # overlap alone; genuine diagrams normally have no Text/Formula box covering
     # most of their area.
     equation_picture_min_aspect: float | None = None
+    # Drop a DETR Picture whose area is at least this fraction covered by the
+    # source PDF's own text-layer glyphs and which contains no vector drawing --
+    # a display equation the layout model reads as a figure. Where
+    # equation_text_overlap asks a second detector whether the region is text,
+    # this reads the born-digital truth: a display equation is typeset from the
+    # same glyphs as the prose around it, so the text layer tiles its whole area
+    # and nothing is drawn inside it, while a real diagram is mostly drawn with a
+    # few point labels. That makes it independent of aspect ratio, which
+    # equation_text_overlap needs (EQUATION_PICTURE_MIN_ASPECT) and which a
+    # stacked fraction or a summation defeats by being roughly square. Inert on a
+    # scanned page (no text layer) and wherever no source PDF is threaded
+    # through, so it complements rather than replaces the detector-based filter.
+    # None -> keep text-layer-covered pictures.
+    text_layer_equation_coverage: float | None = None
     # Detect Picture/Table figures at this (lower) confidence, independently of
     # the text-detection threshold used for problem-start geometry. Faint printed
     # diagrams score well below the text threshold (Mandelbrot's small

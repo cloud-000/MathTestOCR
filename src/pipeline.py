@@ -121,7 +121,8 @@ def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD, 
 def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None,
                      right_margin_frac=None, footer_frac=None, min_height_frac=None,
                      equation_text_overlap=None, equation_text_boxes=None,
-                     equation_picture_min_aspect=None):
+                     equation_picture_min_aspect=None, text_layer_coverage=None,
+                     pdf_page=None):
     """Non-blank DETR Picture detections, top-to-bottom (reading order).
 
     `max_area_frac` (from a series' LayoutOptions) optionally drops any Picture
@@ -152,6 +153,12 @@ def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None,
     to test coverage against; when None the Text-labeled boxes in `detections`
     are used, but a caller running figures below the text threshold passes a
     lower-confidence text set so equations DETR was unsure about are still caught.
+
+    `text_layer_coverage` (also from LayoutOptions) is the born-digital version of
+    that filter, needing no aspect guard: with `pdf_page` supplied, drop any
+    Picture the source PDF's own glyphs tile that densely and no vector path is
+    drawn inside (see config.text_layer_equation_coverage). Both are None/absent
+    by default, and either may be used without the other.
     """
     pics = [
         d
@@ -192,6 +199,8 @@ def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None,
             return any(_contained_frac(box, t) > equation_text_overlap for t in text_boxes)
 
         pics = [d for d in pics if not _is_equation(d["box"])]
+    if text_layer_coverage is not None and pdf_page is not None:
+        pics = _drop_text_layer_equations(pics, pdf_page, image, text_layer_coverage)
     pics = _drop_nested_pictures(pics)
     pics.sort(key=lambda d: (d["box"][1], d["box"][0]))
     return pics
@@ -200,6 +209,70 @@ def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None,
 def _box_area(box):
     x0, y0, x1, y1 = box
     return max(0, x1 - x0) * max(0, y1 - y0)
+
+
+def _rect_union_area(rects, clip):
+    """Area of the union of `rects`, clipped to `clip`.
+
+    A union rather than a sum: glyph boxes on the same line overlap slightly, and
+    double-counting them would inflate a figure's label coverage. Exact, via
+    coordinate compression -- the inputs are the handful of words inside one
+    Picture box, so the cell scan is cheap.
+    """
+    boxes = []
+    for rect in rects:
+        x0, y0 = max(rect[0], clip[0]), max(rect[1], clip[1])
+        x1, y1 = min(rect[2], clip[2]), min(rect[3], clip[3])
+        if x1 > x0 and y1 > y0:
+            boxes.append((x0, y0, x1, y1))
+    if not boxes:
+        return 0.0
+    xs = sorted({x for b in boxes for x in (b[0], b[2])})
+    ys = sorted({y for b in boxes for y in (b[1], b[3])})
+    total = 0.0
+    for x0, x1 in zip(xs, xs[1:]):
+        for y0, y1 in zip(ys, ys[1:]):
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            if any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in boxes):
+                total += (x1 - x0) * (y1 - y0)
+    return total
+
+
+def _drop_text_layer_equations(pics, pdf_page, image, min_coverage):
+    """Drop the Pictures the source PDF shows to be display equations.
+
+    A display equation is set from the same glyphs as the prose around it, so the
+    text layer tiles its whole box and no vector path is drawn inside it; a real
+    figure is the inverse -- drawn rules and edges, with a few point labels. That
+    reading of the born-digital source needs no aspect-ratio guard, so it catches
+    the roughly-square stacked fractions and summations `equation_text_overlap`
+    is built to leave alone. A page with no text layer (a scan) yields no words
+    and nothing is dropped.
+    """
+    if pdf_page.rect.width <= 0 or pdf_page.rect.height <= 0:
+        return pics
+    sx = image.width / pdf_page.rect.width
+    sy = image.height / pdf_page.rect.height
+
+    def scaled(rect):
+        return (rect[0] * sx, rect[1] * sy, rect[2] * sx, rect[3] * sy)
+
+    words = [scaled(word[:4]) for word in pdf_page.get_text("words")]
+    if not words:
+        return pics
+    drawings = [scaled(drawing["rect"]) for drawing in pdf_page.get_drawings()]
+
+    def is_equation(box):
+        area = _box_area(box)
+        if not area:
+            return False
+        if any(
+            _contained_frac(d, box) > config.TEXT_LAYER_DRAWING_FRAC for d in drawings
+        ):
+            return False
+        return _rect_union_area(words, box) / area >= min_coverage
+
+    return [d for d in pics if not is_equation(d["box"])]
 
 
 def _drop_solution_answer_boxes(
@@ -542,7 +615,7 @@ def _point_marker_row_starts(image, right_margin_frac, header_frac, footer_frac,
 
 
 def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=None,
-                     equation_text_boxes=None, engine="ocr"):
+                     equation_text_boxes=None, engine="ocr", pdf_page=None):
     """Map each non-blank DETR Picture to a problem number by vertical position.
 
     `problem_seq` is the ordered list of problem numbers (top-to-bottom). Each
@@ -574,6 +647,8 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
         layout.equation_text_overlap,
         equation_text_boxes,
         layout.equation_picture_min_aspect,
+        layout.text_layer_equation_coverage,
+        pdf_page,
     )
     pics = _sorted_pictures(
         detections,
@@ -586,6 +661,8 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
         layout.equation_text_overlap,
         equation_text_boxes,
         layout.equation_picture_min_aspect,
+        layout.text_layer_equation_coverage,
+        pdf_page,
     )
     if not pics:
         return {}
@@ -933,6 +1010,28 @@ def _vertical_slices(image, count=3):
     return list(zip(cuts, cuts[1:]))
 
 
+_RENDERED_PAGE_RE = re.compile(r"page_(\d+)")
+
+
+def _pdf_page_for(doc, page_path):
+    """The source PDF page a rendered page image came from, or None.
+
+    `pdf_io` names rendered pages "page_<pdf page number>.png", and a page the
+    series skipped leaves a gap in the list, so the filename is the only reliable
+    index back into the document. A series that renders its pages some other way
+    (or a test that is a folder of images, where `doc` is None) simply gets no
+    text layer -- every filter that reads one is opt-in and skips when it is
+    absent.
+    """
+    if doc is None:
+        return None
+    match = _RENDERED_PAGE_RE.fullmatch(Path(page_path).stem)
+    if match is None:
+        return None
+    index = int(match.group(1)) - 1
+    return doc[index] if 0 <= index < len(doc) else None
+
+
 def _figure_mask_boxes(detections):
     """Figure rectangles (DETR Picture/Table) to blank on the masking rung."""
     return [d["box"] for d in detections if d["label"] in config.IMAGE_LABELS]
@@ -948,6 +1047,7 @@ def process_image_markdown(
     carry=None,
     clean_markdown=None,
     validate_markdown=None,
+    pdf_page=None,
 ):
     """Whole-page OCR via the nanonets engine; DETR supplies the image crops.
 
@@ -966,6 +1066,11 @@ def process_image_markdown(
     the problem in progress at the top of this page (from the previous page of a
     multi-page test): it binds this page's leading text and any figure above the
     first problem to that problem instead of dropping them (see process_test).
+    `pdf_page` is this page's source PDF page when the test was rendered from one
+    -- the born-digital text layer behind `LayoutOptions.text_layer_equation_
+    coverage`, mirroring what process_solution_document already gives the
+    solution side. None (a folder of page images, or a series that has not opted
+    into a text-layer filter) simply skips those filters.
     """
     layout = layout or config.LayoutOptions()
     engine = getattr(client, "name", "ocr")
@@ -1092,7 +1197,7 @@ def process_image_markdown(
     geom_seq = [n for n in problem_seq if n != carry]
     groups = _assign_pictures(
         assign_detections, image, geom_seq, layout, items, carry, equation_text_boxes,
-        engine=engine,
+        engine=engine, pdf_page=pdf_page,
     )
     for number in sorted(groups):
         prob = problem_for(number)
@@ -1116,6 +1221,7 @@ def process_test(
     layout=None,
     clean_page=None,
     validate_page=None,
+    source_pdf=None,
 ):
     """Parse every page of a multi-page test and merge problems by number.
 
@@ -1133,10 +1239,22 @@ def process_test(
     the next page (`carry`) so that page's leading text and any figure sitting
     above its first problem attach to the problem continued from the previous page
     instead of being dropped (see process_image_markdown / _assign_pictures).
+
+    `source_pdf` is the PDF `page_paths` were rendered from, when there is one:
+    each page's born-digital text layer is passed through for the figure filters
+    that read it (`LayoutOptions.text_layer_equation_coverage`), the same service
+    `process_solution_document` performs for solution pages. A folder of page
+    images, or a series opting into none of those filters, passes None.
     """
     merged = {}  # number -> Problem
     carry = None  # nanonets: problem in progress at the top of the next page
+    doc = None
+    if source_pdf is not None and Path(source_pdf).suffix.lower() == ".pdf":
+        import pymupdf
+
+        doc = pymupdf.open(source_pdf)
     for page_index, path in enumerate(page_paths):
+        pdf_page = _pdf_page_for(doc, path)
         if engine in config.MARKDOWN_ENGINES:
             thr = threshold if threshold is not None else config.NANONETS_DETECT_THRESHOLD
             problems, _, _ = process_image_markdown(
@@ -1157,6 +1275,7 @@ def process_test(
                     if validate_page is not None
                     else None
                 ),
+                pdf_page=pdf_page,
             )
             page_numbers = [p.number for p in problems]
             if page_numbers:
@@ -1169,6 +1288,8 @@ def process_test(
             if p.number not in merged:
                 merged[p.number] = Problem(number=p.number)
             merged[p.number].elements.extend(p.elements)
+    if doc is not None:
+        doc.close()
     return [merged[n] for n in sorted(merged)]
 
 
@@ -1490,6 +1611,8 @@ def process_solution_document(
             page_initial_point_restart=layout.page_initial_point_restart,
             flat_problem_numbering=layout.flat_problem_numbering,
         )
+        # pdf_io names rendered pages "page_<pdf page number>.png".
+        pdf_index = int(Path(path).stem.split("_")[1]) - 1 if doc is not None else None
         pics = _sorted_pictures(
             detections,
             image,
@@ -1501,9 +1624,9 @@ def process_solution_document(
             layout.equation_text_overlap if solution_eq_filter else None,
             equation_text_boxes,
             layout.equation_picture_min_aspect,
+            layout.text_layer_equation_coverage,
+            doc[pdf_index] if doc is not None else None,
         )
-        # pdf_io names rendered pages "page_<pdf page number>.png".
-        pdf_index = int(Path(path).stem.split("_")[1]) - 1 if doc is not None else None
         if pics and doc is not None and layout.solution_answer_box_filter:
             pics = _drop_solution_answer_boxes(
                 pics,

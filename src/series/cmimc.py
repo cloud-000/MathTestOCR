@@ -21,6 +21,11 @@ Layout quirks handled here:
   ("# Balance the Board") and prints no number at all
   (``heading_problem_markers``); the 2018 team round numbers a relay
   ``1-1.``/``6-2.`` (see ``_RELAY_RE``).
+* Display equations -- a stacked fraction after "of", a boxed final answer, a
+  summation ending a sentence -- are read as Pictures and would be written out
+  as figure crops.  They are roughly square and no shorter than the genuine wide
+  strip figures, so neither the aspect nor the height guard separates them;
+  ``text_layer_equation_coverage`` does, from the born-digital glyphs.
 * Instruction pages, and the solutions packet that 2017's number-theory
   ``test.pdf`` bundles after the round itself, are dropped by ``skip_page``
   before any OCR.
@@ -267,11 +272,22 @@ class CmimcSeries(Series):
         round, the only one that titles its proof problems instead of numbering
         them; enabling it elsewhere would turn each round's title heading into a
         problem.
+
+        ``text_layer_equation_coverage`` drops the display equations DETR reads
+        as figures -- a stacked fraction after "of", a boxed final answer, a
+        summation ending a sentence. They are roughly square, so the aspect guard
+        behind ``equation_text_overlap`` cannot see them, and no shorter than the
+        round's genuine wide strip figures (a tetromino row is 0.025 of the page
+        height against the equations' 0.027-0.038), so height cannot either.
+        Their source glyphs can: measured over every CMIMC figure box, the six
+        equations cover 0.30-0.52 of their box with text-layer glyphs while no
+        genuine figure exceeds 0.12 and nothing at all falls in between.
         """
         titled = getattr(self, "_active_test_id", "").endswith(_TITLED_PROOF_ROUND)
         return config.LayoutOptions(
             inline_figures=True,
             header_picture_frac=0.10,
+            text_layer_equation_coverage=0.20,
             strict_section_restarts=True,
             heading_problem_markers=titled,
         )

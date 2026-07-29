@@ -243,6 +243,7 @@ def _parse_one_test(
             layout=layout,
             clean_page=series.clean_statement_markdown,
             validate_page=series.validate_statement_markdown,
+            source_pdf=test.source,
         )
     return series.postprocess(problems)
 
