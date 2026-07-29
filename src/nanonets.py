@@ -250,7 +250,7 @@ def _tandem_loop(text: str) -> bool:
     return matches >= config.NANONETS_LOOP_MIN_REPEATS - 1
 
 
-def _split_glued_markers(text: str, match_marker) -> str:
+def _split_glued_markers(text: str, match_marker, allow_bare_markers=False) -> str:
     """Break a line before a problem marker glued onto a display-math close.
 
     Nanonets occasionally emits the next problem's marker on the same line as
@@ -278,7 +278,9 @@ def _split_glued_markers(text: str, match_marker) -> str:
     """
     def repl(m):
         probe = text[m.end():].lstrip("*_# ")
-        if probe[:1].isalpha() and match_marker(probe) is not None:
+        is_worded = probe[:1].isalpha()
+        is_bare_marker = bool(re.match(r"^\d+\s*[.:]\s+[A-Z$\\]", probe))
+        if (is_worded or (allow_bare_markers and is_bare_marker)) and match_marker(probe) is not None:
             return m.group(0).rstrip() + "\n"
         return m.group(0)
 
@@ -504,6 +506,7 @@ def parse_layout(
     consecutive_problem_markers=False,
     page_initial_point_restart=False,
     flat_problem_numbering=False,
+    split_glued_bare_markers=False,
 ):
     """Turn Nanonets markdown into an ordered list of items.
 
@@ -637,7 +640,7 @@ def parse_layout(
         """
         nonlocal current, last_raw, saw_heading
         text = _TABLE_TAG_RE.sub("\n", chunk)
-        text = _split_glued_markers(text, match_marker)
+        text = _split_glued_markers(text, match_marker, split_glued_bare_markers)
         pending_point_item = False
         lines = [raw.strip() for raw in text.splitlines() if raw.strip()]
 

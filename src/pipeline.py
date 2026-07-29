@@ -1277,6 +1277,7 @@ def process_image_markdown(
         consecutive_problem_markers=layout.consecutive_problem_markers,
         page_initial_point_restart=layout.page_initial_point_restart,
         flat_problem_numbering=layout.flat_problem_numbering,
+        split_glued_bare_markers=layout.split_glued_bare_markers,
     )
 
     print(f"[{engine}] Assembling problems...")
@@ -1738,6 +1739,7 @@ def process_solution_document(
             consecutive_problem_markers=layout.consecutive_problem_markers,
             page_initial_point_restart=layout.page_initial_point_restart,
             flat_problem_numbering=layout.flat_problem_numbering,
+            split_glued_bare_markers=layout.split_glued_bare_markers,
         )
         # pdf_io names rendered pages "page_<pdf page number>.png".
         pdf_index = int(Path(path).stem.split("_")[1]) - 1 if doc is not None else None

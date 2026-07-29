@@ -400,6 +400,10 @@ class LayoutOptions:
     # <td>N. statement</td><td>point-value</td> table). Off by default: other
     # series' tables are real tabular data, kept verbatim as HTML.
     split_marker_table_rows: bool = False
+    # Permit a bare ``N.`` marker immediately after a display-math close to be
+    # promoted to a new problem. This is deliberately opt-in: a numbered proof
+    # step can have the same shape. BMT's 2020 calculus packet needs it.
+    split_glued_bare_markers: bool = False
     # Treat an <ol>/<li> ordered-list item as the next sequential problem start.
     # A few rounds print the problem number in a separate graphic column (which
     # OCRs as a stray <img>/point-value cell, not text) and let the statements

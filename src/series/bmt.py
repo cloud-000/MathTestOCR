@@ -39,14 +39,52 @@ _SOLUTION_RE = re.compile(
     rf"^\s*{_EMPH}\s*Solution(?:\s+\d+)?\b\s*{_EMPH}\s*:?\s*(.*)$", re.IGNORECASE
 )
 
+
+def _solution_blocks(full_text: str, match_marker) -> dict[int, list[str]]:
+    """Split BMT solution packets without promoting numbered working to problems.
+
+    Modern packets label every real block with ``Answer`` or ``Solution``.  A
+    numbered list inside a worked solution does not, so a candidate marker is
+    accepted only when its following block contains one of those labels.  The
+    older unlabeled packets retain the historical, marker-only behavior.
+    """
+    lines = [line.strip() for line in full_text.splitlines()]
+    candidates = []
+    for index, line in enumerate(lines):
+        probe = line.lstrip("*_# ")
+        marker = match_marker(probe)
+        if marker is not None:
+            candidates.append((index, marker[0], marker[1], probe))
+    labelled = any(_ANSWER_RE.match(line) or _SOLUTION_RE.match(line) for line in lines)
+    accepted = []
+    for pos, (index, number, end, probe) in enumerate(candidates):
+        next_index = candidates[pos + 1][0] if pos + 1 < len(candidates) else len(lines)
+        if labelled:
+            window = lines[index + 1 : next_index]
+            if not any(_ANSWER_RE.match(line) or _SOLUTION_RE.match(line) for line in window):
+                continue
+        accepted.append((index, number, end, probe))
+
+    grouped: dict[int, list[str]] = {}
+    for pos, (index, number, end, probe) in enumerate(accepted):
+        next_index = accepted[pos + 1][0] if pos + 1 < len(accepted) else len(lines)
+        first = probe[end:].strip()
+        block = ([first] if first else []) + lines[index + 1 : next_index]
+        grouped.setdefault(number, []).append("\n".join(block).strip())
+    return grouped
+
 # Rounds we don't parse: power (proof-based team round) and the relay/puzzle
 # rounds, whose formats don't fit the per-problem pipeline. Matched on the
 # subject folder name, including puzzle variants ("puzzle-us-iran").
-_SKIP_SUBJECTS = {"power", "relay"}
+_SKIP_SUBJECTS = {"power", "relay", "partner"}
 
 
 def _skip_subject(subject: str) -> bool:
     return subject in _SKIP_SUBJECTS or subject.startswith("puzzle")
+
+
+def _is_multi_round(test_id: str) -> bool:
+    return test_id.endswith("_tournament")
 
 
 def _clean_answer(value: str) -> str:
@@ -64,12 +102,27 @@ class BmtSeries(Series):
     has_answers = True
 
     @override
+    def match_marker(self):
+        """Match BMT problem markers, including category-prefixed markers like ``GG31 1.`` or ``**LL28** 14.``."""
+        _BMT_MARKER_RE = re.compile(
+            r"^\s*(?:[*_#]{0,3}[A-Z0-9]{3,6}[*_#]{0,3}\s+)?"
+            r"(?:Problem|Question|Q)?\s*(\d+)\s*[.:]\s*",
+            re.IGNORECASE,
+        )
+
+        def matcher(text: str):
+            m = _BMT_MARKER_RE.match(text)
+            return (int(m.group(1)), m.end()) if m else None
+
+        return matcher
+
+    @override
     def discover_tests(self, data_dir):
         """Discover every BMT ``test.pdf`` recursively, minus the skipped rounds.
 
         The full parent path forms the ID, avoiding collisions across the three
         tournaments (``bmt``, ``bmmt``, ``bmmt-online``) and their many rounds.
-        The power/relay/puzzle rounds are excluded (see `_skip_subject`).
+        The power/relay/puzzle/partner rounds are excluded (see `_skip_subject`).
         """
         root = Path(data_dir)
         if not root.is_dir():
@@ -82,8 +135,71 @@ class BmtSeries(Series):
 
     @override
     def layout_options(self):
-        """Keep statement and solution figures at their reading-order position."""
-        return config.LayoutOptions(inline_figures=True)
+        """Keep figures inline while fencing BMT's running header logo."""
+        return config.LayoutOptions(
+            inline_figures=True,
+            header_picture_frac=0.09,
+            strict_section_restarts=True,
+            split_glued_bare_markers=True,
+        )
+
+    @override
+    def test_pages(self, test: Test, workdir):
+        # Layout behavior is intentionally test-aware: the tournament packet
+        # restarts its printed numbering once per round.
+        self._active_test_id = test.id
+        self._page_offsets = self._source_page_offsets(test)
+        return super().test_pages(test, workdir)
+
+    def _source_page_offsets(self, test: Test) -> list[int] | None:
+        """Return global-number offsets for a packet that restarts each round."""
+        if not _is_multi_round(test.id) or Path(test.source).suffix.lower() != ".pdf":
+            return None
+        import pymupdf
+
+        offsets = []
+        total = 0
+        with pymupdf.open(test.source) as document:
+            for page in document:
+                offsets.append(total)
+                # The tournament PDFs are born-digital and print each actual
+                # question in the left margin.  This deliberately ignores
+                # numbered prose embedded farther into a statement.
+                starts = re.findall(r"(?m)^\s*(\d+)\.\s+", page.get_text())
+                total += len(starts)
+        return offsets
+
+    def _renumber_page(self, page_index: int, markdown: str) -> str:
+        offsets = getattr(self, "_page_offsets", None)
+        if offsets is None or page_index >= len(offsets):
+            return markdown
+        offset = offsets[page_index]
+        if not offset:
+            return markdown
+        matcher = self.match_marker()
+        rewritten = []
+        for line in markdown.splitlines(keepends=True):
+            probe = line.lstrip("*_# ")
+            marker = matcher(probe)
+            if marker is None:
+                rewritten.append(line)
+                continue
+            prefix = probe[: marker[1]]
+            replaced = re.sub(
+                r"(\d+)(\s*[.:]\s*)$",
+                lambda m: f"{int(m.group(1)) + offset}{m.group(2)}",
+                prefix,
+            )
+            rewritten.append(line[: len(line) - len(probe)] + replaced + probe[marker[1] :])
+        return "".join(rewritten)
+
+    @override
+    def clean_statement_markdown(self, page_index: int, markdown: str) -> str:
+        return self._renumber_page(page_index, markdown)
+
+    @override
+    def clean_solution_markdown(self, page_index: int, markdown: str) -> str:
+        return self._renumber_page(page_index, markdown)
 
     @override
     def solution_source(self, test):
@@ -95,23 +211,20 @@ class BmtSeries(Series):
         return self.solution_source(test)
 
     @override
-    def parse_solutions(self, full_text):
+    def parse_solutions(self, full_text, test=None, **kwargs):
         """Drop each restated statement and keep only its worked solution.
 
         Figure placeholders are retained so DETR crops stay inline.
         """
-        grouped: dict[int, list[str]] = {}
-        for item in parse_layout(full_text, self.match_marker()):
-            if item["problem"] is None:
-                continue
-            value = item["text"] if item["kind"] == "text" else FIGURE_PLACEHOLDER
-            grouped.setdefault(item["problem"], []).append(value)
+        grouped = _solution_blocks(full_text, self.match_marker())
         return {n: _solution_body("\n".join(parts)) for n, parts in grouped.items()}
 
     @override
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:
         """Extract answers from HTML tables, explicit Answer/Ans lines, boxed values, or numbered lists."""
-        full_text = "\n\n".join(pages_markdown)
+        full_text = "\n\n".join(
+            self._renumber_page(index, page) for index, page in enumerate(pages_markdown)
+        )
         answers = {}
 
         # 1. HTML answer key tables (e.g., Speed Round answer keys)
@@ -128,16 +241,15 @@ class BmtSeries(Series):
                 return answers
             answers = {}
 
-        # 2. Problem blocks via parse_layout
-        for item in parse_layout(full_text, self.match_marker()):
-            if item["problem"] is None or item["kind"] != "text":
-                continue
-            answer = _answer_value(item["text"])
+        # 2. Problem blocks.  Do not let a numbered proof step create an answer
+        # key entry (notably BMT 2019 Discrete and the individual tiebreaker).
+        for number, parts in _solution_blocks(full_text, self.match_marker()).items():
+            answer = _answer_value("\n".join(parts))
             if answer and answer.upper() != "N/A":
-                answers[item["problem"]] = answer
+                answers[number] = answer
 
         # 3. Line-by-line numbered lists (standalone answer key documents)
-        if not answers:
+        if not answers and "answer key" in full_text.casefold():
             for line in full_text.splitlines():
                 leading, pairs = numbered_answers_in_line(line)
                 for num, ans_str in pairs:
