@@ -54,6 +54,12 @@ _TREELAY_CELL_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.IGNORECASE | re
 _TREELAY_ROW_RE = re.compile(r"<tr\b.*?</tr>", re.IGNORECASE | re.DOTALL)
 _HTML_RE = re.compile(r"<[^>]+>")
 
+# Only this packet has a source-confirmed OCR omission that needs the expensive
+# source-text completeness recovery.  Older PDFs expose their text layer in
+# non-reading order (and sometimes leak bare page-break numbers), so applying
+# the same page-level assertion series-wide creates false failures.
+_SOURCE_VALIDATED_SOLUTION_TESTS = {"SMT_2024_team"}
+
 
 class SmtSeries(Series):
     name = "smt"
@@ -102,7 +108,10 @@ class SmtSeries(Series):
         pages = super().test_pages(test, workdir)
         self._active_test_id = test.id
         self._expected_solution_starts = ()
-        if Path(test.source).name.lower() == "solutions.pdf":
+        if (
+            test.id in _SOURCE_VALIDATED_SOLUTION_TESTS
+            and Path(test.source).name.lower() == "solutions.pdf"
+        ):
             import pymupdf
 
             matcher = self.match_marker()
@@ -111,9 +120,21 @@ class SmtSeries(Series):
                 last = 0
                 for page in document:
                     starts = set()
-                    for line in page.get_text().splitlines():
-                        marker = matcher(line)
-                        if marker is not None and marker[0] == last + 1:
+                    for _, _, _, _, text, _, block_type in page.get_text("blocks"):
+                        if block_type != 0:
+                            continue
+                        text = text.lstrip()
+                        marker = matcher(text)
+                        # A page break can leave a bare ``5 .`` fragment in
+                        # the source text layer just before the actual problem
+                        # block on the following page.  It is not a start to
+                        # demand from OCR; require the same substantive tail
+                        # used by the solution-figure marker path.
+                        if (
+                            marker is not None
+                            and len(text) - marker[1] >= config.SOLUTION_MARKER_MIN_CHARS
+                            and marker[0] == last + 1
+                        ):
                             starts.add(marker[0])
                             last = marker[0]
                     expected.append(frozenset(starts))
