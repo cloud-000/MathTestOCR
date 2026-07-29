@@ -87,6 +87,15 @@ _MATH_CLOSE_RE = re.compile(r"(?:\$\$|\\\])[ \t]*")
 # that *opens* a list item starts the next problem; all list/line-break tags are
 # flattened to spaces so none leak into the statement.
 _LI_OPEN_RE = re.compile(r"<li\b", re.IGNORECASE)
+# A level-1 markdown heading, used as a problem start by heading_problem_markers.
+# A heading that is only a generic section label is excluded: proof documents
+# print "# Solutions" inside a problem's own section, and it names no new
+# problem. A *titled* heading that merely ends in "Solution" ("# Perfect Shuffle
+# Solution") is still a problem start.
+_H1_RE = re.compile(r"^#(?!#)\s*\S")
+_GENERIC_HEADING_RE = re.compile(
+    r"^#+\s*[*_]*\s*(?:Solutions?|Answers?|Scoring|Notes?)\s*[*_]*\s*$", re.IGNORECASE
+)
 _LI_BLOCK_RE = re.compile(r"<li\b[^>]*>(.*?)</li>", re.IGNORECASE | re.DOTALL)
 _LIST_TAG_RE = re.compile(r"</?(?:ol|ul|li)\b[^>]*>|<br\s*/?>", re.IGNORECASE)
 _POINT_VALUE_RE = re.compile(
@@ -490,6 +499,7 @@ def parse_layout(
     start_problem=None,
     ordered_list_markers=False,
     point_value_list_markers=False,
+    heading_problem_markers=False,
     strict_section_restarts=False,
     consecutive_problem_markers=False,
     page_initial_point_restart=False,
@@ -521,6 +531,13 @@ def parse_layout(
     opening an ``<ol>/<li>`` list item begins the next sequential problem, for
     rounds that number problems by list position rather than a literal ``N.``
     marker (see config.LayoutOptions).
+
+    `heading_problem_markers` is the same idea for a top-level ``# `` heading:
+    proof rounds that title their problems instead of numbering them (see
+    config.LayoutOptions). The heading text is kept as the problem's first line;
+    a heading that is only a generic section label ("# Solutions") is not a
+    problem start, and numeric markers stop being ones -- on these pages they
+    are steps of a statement's own numbered list.
     """
     match_marker = match_marker or _match_marker
     markdown = _FURNITURE_RE.sub("", markdown)
@@ -660,6 +677,15 @@ def parse_layout(
                 )
             ):
                 saw_heading = True
+            if (
+                heading_problem_markers
+                and _H1_RE.match(line)
+                and not _GENERIC_HEADING_RE.match(line)
+            ):
+                # A titled problem ("# Balance the Board") in a proof round that
+                # prints no number. Only a level-1 heading counts: "## Scoring"
+                # and friends are subsections of the problem it opened.
+                check_marker((last_raw or 0) + 1)
             if ordered_list_markers:
                 # A line opening an <li> begins the next problem (numbered by
                 # list position; the printed "N." OCR'd into a separate graphic
@@ -695,6 +721,18 @@ def parse_layout(
             # line's "N. ____ unit" can be told apart from a real statement.
             probe = line.lstrip("*_# ")
             match = match_marker(probe)
+            if heading_problem_markers:
+                # Headings are the only problem starts on these pages, so a
+                # numeric marker never opens one. When it repeats the current
+                # problem's number it is that titled problem's printed number
+                # and is dropped; anything else is a step in the statement's own
+                # numbered list ("1. Write down the number ...") and stays put.
+                if match is not None and match[0] == current:
+                    line = probe[match[1] :].lstrip("*_ ")
+                line = _clean_text_line(line)
+                if line and not _POINTS_ONLY_RE.match(line):
+                    buf.append(line)
+                continue
             marker_tail_raw = (
                 probe[match[1] :].lstrip("* ") if match is not None else ""
             )

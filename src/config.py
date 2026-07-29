@@ -393,6 +393,14 @@ class LayoutOptions:
     # genuine ordered list inside a problem unless its items also begin with a
     # point value.
     point_value_list_markers: bool = False
+    # Treat a top-level ("# ") markdown heading as the next sequential problem
+    # start. Proof rounds sometimes title their problems ("# Balance the Board")
+    # and print no number at all, so a page carrying one whole problem has no
+    # marker and is either dropped or swallowed by the previous problem. Off by
+    # default and deliberately narrow -- a round title or a section heading on a
+    # normally-numbered page would otherwise manufacture a problem -- so a series
+    # opts in per test (CMIMC's theoretical computer-science round).
+    heading_problem_markers: bool = False
     # Accept a decreasing/restarted problem number only after a visible section
     # heading. HMMT team/power rounds contain numbered procedures and case lists
     # inside problems; the permissive default would mistake an internal "1."

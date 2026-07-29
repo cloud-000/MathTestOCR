@@ -1046,6 +1046,7 @@ def process_image_markdown(
         start_problem=carry,
         ordered_list_markers=layout.ordered_list_markers,
         point_value_list_markers=layout.point_value_list_markers,
+        heading_problem_markers=layout.heading_problem_markers,
         strict_section_restarts=layout.strict_section_restarts,
         consecutive_problem_markers=layout.consecutive_problem_markers,
         page_initial_point_restart=layout.page_initial_point_restart,
@@ -1483,6 +1484,7 @@ def process_solution_document(
             # it stays at the default here (avoid mis-splitting a solution's
             # genuine ordered list into spurious problems).
             point_value_list_markers=layout.point_value_list_markers,
+            heading_problem_markers=layout.heading_problem_markers,
             strict_section_restarts=layout.strict_section_restarts,
             consecutive_problem_markers=layout.consecutive_problem_markers,
             page_initial_point_restart=layout.page_initial_point_restart,
