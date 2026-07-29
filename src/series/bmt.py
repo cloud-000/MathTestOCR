@@ -24,7 +24,6 @@ from pathlib import Path
 from typing_extensions import override
 
 from .. import config
-from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
 from .base import Series, Test, numbered_answers_in_line
 from .smt import _boxed_answer
 
@@ -38,6 +37,15 @@ _PROPOSED_RE = re.compile(rf"^\s*{_EMPH}\s*Proposed\s+by\b", re.IGNORECASE)
 _SOLUTION_RE = re.compile(
     rf"^\s*{_EMPH}\s*Solution(?:\s+\d+)?\b\s*{_EMPH}\s*:?\s*(.*)$", re.IGNORECASE
 )
+_RUNNING_HEADER_RE = re.compile(
+    r"^\s*B(?:ERKELEY\s+MINI\s+|M)?MT\s+20\d{2}\b.*$", re.IGNORECASE
+)
+_TOURNAMENT_HEADING_RE = re.compile(
+    r"^\s*(?:\d+\.\s*)?(?:\*{1,2}\s*)?"
+    r"(?:ROUND\b|CHAMPIONSHIP\s+ROUND|CONSOLATION\s+ROUND)\b",
+    re.IGNORECASE,
+)
+_TIEBREAKER_RE = re.compile(r"\bTIEBREAKER\b", re.IGNORECASE)
 
 
 def _solution_blocks(full_text: str, match_marker) -> dict[int, list[str]]:
@@ -149,7 +157,42 @@ class BmtSeries(Series):
         # restarts its printed numbering once per round.
         self._active_test_id = test.id
         self._page_offsets = self._source_page_offsets(test)
+        self._solution_round_offsets = self._source_solution_round_offsets(test)
         return super().test_pages(test, workdir)
+
+    def _source_solution_round_offsets(self, test: Test):
+        """Map each 2012 solution page's local rounds to global question keys.
+
+        The solution packet is born-digital but its pages may contain the end
+        of one round and the beginning of the next.  Page offsets alone would
+        therefore renumber the continuation incorrectly.  Read the centered
+        round headings from the PDF text layer, retaining both the offset at
+        each page start and every in-page change of round.
+        """
+        if (
+            not _is_multi_round(test.id)
+            or Path(test.source).name.casefold() != "solutions.pdf"
+        ):
+            return None
+        import pymupdf
+
+        page_offsets = []
+        current = 0
+        round_index = 0
+        with pymupdf.open(test.source) as document:
+            for page in document:
+                initial = current
+                headings = []
+                for block in sorted(page.get_text("blocks"), key=lambda b: (b[1], b[0])):
+                    text = " ".join(block[4].split())
+                    # Actual round labels are centered; numbered question and
+                    # proof-list lines live at the left margin.
+                    if block[0] > 150 and _TOURNAMENT_HEADING_RE.match(text):
+                        current = round_index * 6
+                        headings.append(current)
+                        round_index += 1
+                page_offsets.append((initial, headings))
+        return page_offsets
 
     def _source_page_offsets(self, test: Test) -> list[int] | None:
         """Return global-number offsets for a packet that restarts each round."""
@@ -193,12 +236,70 @@ class BmtSeries(Series):
             rewritten.append(line[: len(line) - len(probe)] + replaced + probe[marker[1] :])
         return "".join(rewritten)
 
+    def _renumber_tournament_solution_page(self, page_index: int, markdown: str) -> str:
+        """Flatten a tournament solution page using its source-validated rounds."""
+        offsets = getattr(self, "_solution_round_offsets", None)
+        if offsets is None or page_index >= len(offsets):
+            return markdown
+        offset, heading_offsets = offsets[page_index]
+        heading_index = 0
+        matcher = self.match_marker()
+        rewritten = []
+        for line in markdown.splitlines(keepends=True):
+            plain = line.strip("\n")
+            if _TOURNAMENT_HEADING_RE.match(plain.lstrip("*_# ")):
+                if heading_index < len(heading_offsets):
+                    offset = heading_offsets[heading_index]
+                    heading_index += 1
+                rewritten.append(line)
+                continue
+            probe = line.lstrip("*_# ")
+            marker = matcher(probe)
+            if marker is None:
+                rewritten.append(line)
+                continue
+            prefix = probe[: marker[1]]
+            replaced = re.sub(
+                r"(\d+)(\s*[.:]\s*)$",
+                lambda m: f"{int(m.group(1)) + offset}{m.group(2)}",
+                prefix,
+            )
+            rewritten.append(line[: len(line) - len(probe)] + replaced + probe[marker[1] :])
+        return "".join(rewritten)
+
+    @staticmethod
+    def _strip_running_furniture(markdown: str) -> str:
+        """Remove repeated BMT headers without touching a problem statement."""
+        lines = []
+        for line in markdown.splitlines():
+            if _RUNNING_HEADER_RE.match(line.strip("*_# ")):
+                continue
+            lines.append(line)
+        return "\n".join(lines)
+
     @override
     def clean_statement_markdown(self, page_index: int, markdown: str) -> str:
-        return self._renumber_page(page_index, markdown)
+        # This PDF appends a separate tiebreaker after the 20-question
+        # individual round.  Once its heading appears, no following text
+        # belongs to the selected packet (otherwise it is swallowed by #20).
+        if getattr(self, "_active_test_id", "") == "bmmt_2017_individual":
+            markdown = markdown.split("TIEBREAKER", 1)[0]
+        return self._strip_running_furniture(self._renumber_page(page_index, markdown))
 
     @override
     def clean_solution_markdown(self, page_index: int, markdown: str) -> str:
+        # The 2017 individual solutions PDF appends its separate tiebreaker
+        # packet.  It restarts at 1 and is not part of the individual test.
+        if getattr(self, "_active_test_id", "") == "bmmt_2017_individual":
+            kept = []
+            for line in markdown.splitlines():
+                if _TIEBREAKER_RE.search(line):
+                    break
+                kept.append(line)
+            markdown = "\n".join(kept)
+        markdown = self._strip_running_furniture(markdown)
+        if _is_multi_round(getattr(self, "_active_test_id", "")):
+            return self._renumber_tournament_solution_page(page_index, markdown)
         return self._renumber_page(page_index, markdown)
 
     @override
@@ -220,10 +321,37 @@ class BmtSeries(Series):
         return {n: _solution_body("\n".join(parts)) for n, parts in grouped.items()}
 
     @override
+    def postprocess_solutions(self, solutions, statements, test=None):
+        """Drop an exact restated prompt from older BMT solution blocks."""
+        cleaned = {}
+        for number, value in solutions.items():
+            statement = statements.get(str(number), "").strip()
+            values = value if isinstance(value, list) else [value]
+            trimmed = []
+            for text in values:
+                text = text.strip()
+                if statement:
+                    # Statement and solution OCR may differ only in blank-line
+                    # wrapping.  Match its whitespace flexibly, but require the
+                    # full prompt at the beginning before removing anything.
+                    prefix = re.sub(r"\\\s+", r"\\s+", re.escape(statement))
+                    match = re.match(prefix, text)
+                    if match is not None:
+                        text = text[match.end() :].lstrip()
+                if text:
+                    trimmed.append(text)
+            if trimmed:
+                cleaned[number] = trimmed
+        return cleaned
+
+    @override
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:
         """Extract answers from HTML tables, explicit Answer/Ans lines, boxed values, or numbered lists."""
         full_text = "\n\n".join(
-            self._renumber_page(index, page) for index, page in enumerate(pages_markdown)
+            self.clean_solution_markdown(index, page)
+            if _is_multi_round(getattr(self, "_active_test_id", ""))
+            else self._renumber_page(index, page)
+            for index, page in enumerate(pages_markdown)
         )
         answers = {}
 
@@ -231,7 +359,10 @@ class BmtSeries(Series):
         td_matches = re.findall(
             r"<td>\s*(\d+)\s*</td>\s*<td>\s*(.*?)\s*</td>", full_text, re.I | re.S
         )
-        if td_matches:
+        # A worked solution can contain a numerical HTML table (for example,
+        # BmMT 2025 lists 1--49 while solving question 5).  Treat table cells
+        # as an answer key only when the document explicitly identifies one.
+        if td_matches and "answer key" in full_text.casefold():
             for q_str, ans_str in td_matches:
                 num = int(q_str)
                 clean_ans = _clean_answer(ans_str)
