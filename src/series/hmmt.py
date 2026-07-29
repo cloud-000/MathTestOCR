@@ -420,7 +420,9 @@ class HmmtSeries(Series):
         return answers
 
     @override
-    def postprocess_solutions(self, solutions: dict, statements: dict) -> dict:
+    def postprocess_solutions(
+        self, solutions: dict, statements: dict, test: Test = None
+    ) -> dict:
         cleaned = {}
         for number, value in solutions.items():
             statement = statements.get(str(number), "")

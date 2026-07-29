@@ -331,6 +331,13 @@ class LayoutOptions:
     # fraction or an equation strip is wide and text-covered and dropped. None ->
     # keep text-covered pictures.
     equation_text_overlap: float | None = None
+    # Per-series lower bound for the aspect-ratio guard used by
+    # equation_text_overlap. None uses EQUATION_PICTURE_MIN_ASPECT. A
+    # born-digital series whose layout detector also emits compact summations
+    # and products as Picture boxes can set 0 to rely on strong containing-text
+    # overlap alone; genuine diagrams normally have no Text/Formula box covering
+    # most of their area.
+    equation_picture_min_aspect: float | None = None
     # Detect Picture/Table figures at this (lower) confidence, independently of
     # the text-detection threshold used for problem-start geometry. Faint printed
     # diagrams score well below the text threshold (Mandelbrot's small

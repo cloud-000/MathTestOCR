@@ -12,16 +12,21 @@ Engines:
                  so process_image_markdown drives either interchangeably.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING
 
 from PIL import Image
 
 from . import anchors as anchors_mod
 from . import config, detect, grouping
 from . import nanonets as nanonets_mod
-from .ocr import OCRModel
+
+if TYPE_CHECKING:
+    from .ocr import OCRModel
 
 
 _FIGURE_CUE_RE = re.compile(
@@ -115,7 +120,8 @@ def process_image(image_path, ocr: OCRModel, threshold=config.DETECT_THRESHOLD, 
 
 def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None,
                      right_margin_frac=None, footer_frac=None, min_height_frac=None,
-                     equation_text_overlap=None, equation_text_boxes=None):
+                     equation_text_overlap=None, equation_text_boxes=None,
+                     equation_picture_min_aspect=None):
     """Non-blank DETR Picture detections, top-to-bottom (reading order).
 
     `max_area_frac` (from a series' LayoutOptions) optionally drops any Picture
@@ -176,7 +182,12 @@ def _sorted_pictures(detections, image, max_area_frac=None, header_frac=None,
 
         def _is_equation(box):
             w, h = box[2] - box[0], box[3] - box[1]
-            if h <= 0 or w / h <= config.EQUATION_PICTURE_MIN_ASPECT:
+            min_aspect = (
+                config.EQUATION_PICTURE_MIN_ASPECT
+                if equation_picture_min_aspect is None
+                else equation_picture_min_aspect
+            )
+            if h <= 0 or w / h <= min_aspect:
                 return False
             return any(_contained_frac(box, t) > equation_text_overlap for t in text_boxes)
 
@@ -562,6 +573,7 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
         layout.min_picture_height_frac,
         layout.equation_text_overlap,
         equation_text_boxes,
+        layout.equation_picture_min_aspect,
     )
     pics = _sorted_pictures(
         detections,
@@ -573,6 +585,7 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
         layout.min_picture_height_frac,
         layout.equation_text_overlap,
         equation_text_boxes,
+        layout.equation_picture_min_aspect,
     )
     if not pics:
         return {}
@@ -620,10 +633,40 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
         and not any(_appended(i, number) for i, number in img_tags)
     )
 
+    # One printed illustration may be detected as several adjacent Picture
+    # crops even though OCR emits one inline <img> marker for the whole group
+    # (PUMaC's four-symbol alphabet is the canonical example). Cluster
+    # vertically overlapping crops and trust the tags at cluster granularity
+    # when every tagged problem also has an explicit figure cue. This is much
+    # safer than zipping individual crops to tags and avoids letting unreliable
+    # left-margin text geometry shift the entire page by several problems.
+    picture_clusters = []
+    cluster_slop = image.height * 0.02
+    for pic in pics:
+        y0, y1 = pic["box"][1], pic["box"][3]
+        if not picture_clusters or y0 > picture_clusters[-1][1] + cluster_slop:
+            picture_clusters.append([[pic], y1])
+        else:
+            picture_clusters[-1][0].append(pic)
+            picture_clusters[-1][1] = max(picture_clusters[-1][1], y1)
+    trusted_cluster_tags = (
+        bool(img_tags)
+        and len(picture_clusters) == len(img_tags)
+        and tag_numbers == sorted(tag_numbers)
+        and set(tag_numbers).issubset(cue_problems)
+        and not any(_appended(i, number) for i, number in img_tags)
+    )
+
     def _groups_from_tags():
         groups = {}
         for pic, (_, number) in zip(pics, img_tags):
             groups.setdefault(number, []).append(pic)
+        return groups
+
+    def _groups_from_cluster_tags():
+        groups = {}
+        for (cluster, _), (_, number) in zip(picture_clusters, img_tags):
+            groups.setdefault(number, []).extend(cluster)
         return groups
 
     # Geometry is the primary signal, but only trustworthy when DETR found exactly
@@ -635,6 +678,8 @@ def _assign_pictures(detections, image, problem_seq, layout, items=None, carry=N
     # on a start/problem mismatch -- when the starts agree geometry is preferred,
     # because nanonets' tag order is the less reliable of the two.
     if len(starts) != len(problem_seq):
+        if trusted_cluster_tags:
+            return _groups_from_cluster_tags()
         # Trust the tags only when their problem-tagged count matches DETR's
         # pictures *and* none is "appended" past its problem: nanonets sometimes
         # dumps a figure's <img> at the very bottom of the page (after the last
@@ -807,7 +852,12 @@ def _ocr_page(
             from datetime import datetime
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Calling OCR for page {cache_key or 'unknown'} (temp={temp})...")
         markdown, runaway = client.parse_page(image, temp)
-        if not runaway and (validate is None or validate(markdown)):
+        if not runaway:
+            if validate is None or validate(markdown):
+                break
+            # A cleanly terminated but incomplete response normally exhausted
+            # the model's output budget. Temperature retries cannot add budget;
+            # continue below with bounded vertical slices instead.
             break
     else:
         if mask_boxes:
@@ -819,9 +869,68 @@ def _ocr_page(
                 image, temps[-1], mask_boxes=mask_boxes
             )
     valid = validate is None or validate(markdown)
+    if not valid:
+        print(
+            f"[{engine}] completeness validation failed; "
+            "OCRing three vertical slices"
+        )
+        parts = []
+        slice_runaway = False
+        for top, bottom in _vertical_slices(image, count=3):
+            crop = image.crop((0, top, image.width, bottom))
+            crop_masks = []
+            for box in mask_boxes or ():
+                x0, y0, x1, y1 = box
+                if y1 <= top or y0 >= bottom:
+                    continue
+                crop_masks.append(
+                    (
+                        x0,
+                        max(0, y0 - top),
+                        x1,
+                        min(bottom - top, y1 - top),
+                    )
+                )
+            part, part_runaway = client.parse_page(
+                crop,
+                temps[-1],
+                mask_boxes=crop_masks or None,
+            )
+            parts.append(part)
+            slice_runaway = slice_runaway or part_runaway
+        combined = "\n\n".join(parts)
+        if validate(combined):
+            markdown = combined
+            runaway = slice_runaway
+            valid = True
+    if not valid:
+        raise RuntimeError(
+            f"{engine} OCR remained incomplete after all recovery attempts "
+            f"for {cache_key or 'page'}; refusing to return truncated text"
+        )
     if cache is not None and cache_key is not None and not runaway and valid:
         cache.put(cache_key, markdown)
     return markdown
+
+
+def _vertical_slices(image, count=3):
+    """Split a dense page near whitespace rows for bounded OCR responses."""
+    if count <= 1 or image.height < count * 100:
+        return [(0, image.height)]
+    # Downscale each row to one grayscale pixel. The lightest row near each
+    # target is the safest cut and avoids bisecting a line of mathematics.
+    rows = image.convert("L").resize((1, image.height))
+    brightness = list(rows.get_flattened_data())
+    cuts = [0]
+    radius = max(20, image.height // 20)
+    for index in range(1, count):
+        target = image.height * index // count
+        lower = max(cuts[-1] + 50, target - radius)
+        upper = min(image.height - 50, target + radius)
+        cut = max(range(lower, upper + 1), key=lambda row: brightness[row])
+        cuts.append(cut)
+    cuts.append(image.height)
+    return list(zip(cuts, cuts[1:]))
 
 
 def _figure_mask_boxes(detections):
@@ -1281,6 +1390,7 @@ def process_solution_document(
     source_pdf=None,
     match_solution=None,
     figure_floor=None,
+    validate_page=None,
 ):
     """OCR a solution document and crop its figures, assigned to problems.
 
@@ -1354,6 +1464,11 @@ def process_solution_document(
             cache=cache,
             cache_key=path,
             mask_boxes=_figure_mask_boxes(detections),
+            validate=(
+                (lambda text, i=index: validate_page(i, text))
+                if validate_page is not None
+                else None
+            ),
         )
         pages_md.append(markdown)
         if clean_page is not None:
@@ -1383,6 +1498,7 @@ def process_solution_document(
             layout.min_picture_height_frac,
             layout.equation_text_overlap if solution_eq_filter else None,
             equation_text_boxes,
+            layout.equation_picture_min_aspect,
         )
         # pdf_io names rendered pages "page_<pdf page number>.png".
         pdf_index = int(Path(path).stem.split("_")[1]) - 1 if doc is not None else None

@@ -32,7 +32,6 @@ from src import config, output
 from src.annotate import draw_detections
 from src.llama import LlamaClient
 from src.nanonets import NanonetsClient
-from src.ocr import OCRModel
 from src.ocr_cache import PARSE_CACHE, SOLUTION_CACHE, OCRCache
 from src.pdf_io import pdf_to_images
 from src.pipeline import (
@@ -129,6 +128,8 @@ def _open_engine(engine, llama_tier=None):
         return NanonetsClient()
     if engine == "llama":
         return LlamaClient(tier=llama_tier or config.LLAMA_TIER)
+    from src.ocr import OCRModel
+
     return OCRModel()
 
 
@@ -219,12 +220,19 @@ def _resolve_layout(series, args):
     return layout
 
 
-def _parse_one_test(series, test, engine, model, threshold, cache=None, layout=None):
+def _parse_one_test(
+    series, test, engine, model, threshold, cache=None, layout=None, temperature=None
+):
     """Render a test to pages and parse them into a merged, post-processed list."""
     match = series.match_marker()
-    layout = layout if layout is not None else series.layout_options()
     with tempfile.TemporaryDirectory(prefix="comp-ocr-") as workdir:
         pages = series.test_pages(test, workdir)
+        # Some series choose layout behavior from the active test (PUMaC's
+        # directional team rounds are the notable case). Resolve those options
+        # only after test_pages has activated the current source.
+        layout = layout if layout is not None else series.layout_options()
+        if temperature is not None:
+            layout = replace(layout, nanonets_temperature=temperature)
         problems = process_test(
             pages,
             engine,
@@ -258,7 +266,6 @@ def _run_parse_batch(series, tests, args):
     if not tests:
         return
 
-    layout = _resolve_layout(series, args)
     model = _open_engine(args.engine, args.llama_tier)
     try:
         for test in tests:
@@ -269,7 +276,13 @@ def _run_parse_batch(series, tests, args):
             log(f"[{series.name}] parsing {test.id} ...")
             cache = OCRCache(dest / PARSE_CACHE, enabled=args.cache)
             problems = _parse_one_test(
-                series, test, args.engine, model, args.threshold, cache=cache, layout=layout
+                series,
+                test,
+                args.engine,
+                model,
+                args.threshold,
+                cache=cache,
+                temperature=getattr(args, "temp", None),
             )
             # Reference every figure crop from the statement text so a problem's
             # images are discoverable from problems.json alone, not only by
@@ -317,6 +330,8 @@ def _cmd_parse_single(args):
         ocr = None
     else:
         threshold = args.threshold if args.threshold is not None else config.DETECT_THRESHOLD
+        from src.ocr import OCRModel
+
         ocr = OCRModel()
         problems, detections, groups = process_image(args.image, ocr, threshold)
     _print_problems(problems)
@@ -434,11 +449,15 @@ def _scrape_solutions(args, series, test, sol, dest, model):
                 source_pdf=sol,
                 match_solution=series.solution_index_marker,
                 figure_floor=series.solution_figure_floor,
+                validate_page=series.validate_solution_markdown,
             )
             cleaned = "\n\n".join(
                 series.clean_solution_markdown(i, md) for i, md in enumerate(pages_md)
             )
             solutions = series.parse_solutions(cleaned, test=test)
+            figures = series.postprocess_solution_figures(
+                figures, test=test, full_text=cleaned
+            )
         else:
             # Legacy mlx path: per-page marker pipeline; figures come from the
             # problems' own image elements.
@@ -466,7 +485,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
             statements = json.loads(statement_path.read_text())
         except (OSError, ValueError):
             statements = {}
-    solutions = series.postprocess_solutions(solutions, statements)
+    solutions = series.postprocess_solutions(solutions, statements, test=test)
     # Place each figure crop inline in its solution text. Crops are referenced
     # by a path relative to the output root (out/<series>/<test>/), so the marker
     # resolves when out/ is served as the document root.

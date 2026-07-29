@@ -150,6 +150,16 @@ class Series:
         """
         return True
 
+    def validate_solution_markdown(self, page_index: int, markdown: str) -> bool:
+        """Return whether one solution-page OCR is complete enough to cache/use.
+
+        This mirrors :meth:`validate_statement_markdown` for solution packets.
+        The default accepts every non-runaway transcription; a born-digital
+        series can record expected problem starts while rendering the source and
+        reject a response that silently omitted one.
+        """
+        return True
+
     # --- Numbering quirks ------------------------------------------------
     def match_marker(self):
         """Return a series-specific marker matcher, or None to use the default.
@@ -252,7 +262,9 @@ class Series:
                 grouped.setdefault(item["problem"], []).append(FIGURE_PLACEHOLDER)
         return {n: "\n".join(parts) for n, parts in grouped.items()}
 
-    def postprocess_solutions(self, solutions: dict, statements: dict) -> dict:
+    def postprocess_solutions(
+        self, solutions: dict, statements: dict, test: Test = None
+    ) -> dict:
         """Final series-specific cleanup with parsed statements available.
 
         Most series can segment worked solutions using printed labels alone.
@@ -261,6 +273,12 @@ class Series:
         without teaching the shared pipeline any competition-specific prose.
         """
         return solutions
+
+    def postprocess_solution_figures(
+        self, figures: dict, test: Test = None, full_text: str = ""
+    ) -> dict:
+        """Remap solution-figure problem keys after series-specific numbering."""
+        return figures
 
     def solution_index_marker(self, text: str):
         """Return a solution index from a solution-block heading, or None.
