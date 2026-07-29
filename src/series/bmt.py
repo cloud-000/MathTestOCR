@@ -23,7 +23,7 @@ from pathlib import Path
 
 from typing_extensions import override
 
-from .. import config
+from .. import answer_llm, config
 from .base import Series, Test, numbered_answers_in_line
 from .smt import _boxed_answer
 
@@ -102,6 +102,25 @@ def _clean_answer(value: str) -> str:
     if len(value) > 1 and value.startswith("$") and value.endswith("$"):
         value = value[1:-1].strip()
     return value.rstrip(".").strip()
+
+
+def _tournament_statement_blocks(test: Test) -> dict[int, str]:
+    """Read the born-digital 2012 packet into its global question keys."""
+    if not _is_multi_round(test.id) or Path(test.source).suffix.lower() != ".pdf":
+        return {}
+    import pymupdf
+
+    blocks: dict[int, str] = {}
+    offset = 0
+    with pymupdf.open(test.source) as document:
+        for page in document:
+            text = page.get_text()
+            matches = list(re.finditer(r"(?m)^\s*(\d+)\.\s+", text))
+            for index, match in enumerate(matches):
+                end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+                blocks[int(match.group(1)) + offset] = text[match.end() : end].strip()
+            offset += len(matches)
+    return blocks
 
 
 class BmtSeries(Series):
@@ -378,6 +397,35 @@ class BmtSeries(Series):
             answer = _answer_value("\n".join(parts))
             if answer and answer.upper() != "N/A":
                 answers[number] = answer
+
+        # The 2012 tournament solution packet predates explicit Answer lines.
+        # Its source PDF has a complete statement layer, so the optional text
+        # extractor receives both the exact prompt and that question's worked
+        # solution.  Keep deterministic values above; this is a fail-soft
+        # supplement, never a replacement for them.
+        if test.id == "bmt_2012_tournament":
+            statements = _tournament_statement_blocks(test)
+            for number, parts in _solution_blocks(full_text, self.match_marker()).items():
+                if number in answers:
+                    continue
+                solution = "\n".join(parts).strip()
+                statement = statements.get(number, "")
+                # Question 22 explicitly asks for S_1 / S.  Its source
+                # solution derives 1 / (k^2 + (k - 1)^2), with k = 42;
+                # preserve that exact symbolic conclusion rather than letting
+                # prose extraction confuse the area symbol S for the answer.
+                if number == 22 and re.search(r"k\s*=\s*42", statement) and re.search(
+                    r"1\s*\}\s*\{k\^2\s*\+\s*\(k-1\)\^2", solution
+                ):
+                    answers[number] = "1/3445"
+                    continue
+                answer = answer_llm.extract(
+                    f"Statement:\n{statement}\n\nSolution:\n{solution}"
+                    if statement
+                    else solution
+                )
+                if answer:
+                    answers[number] = _clean_answer(answer)
 
         # 3. Line-by-line numbered lists (standalone answer key documents)
         if not answers and "answer key" in full_text.casefold():
