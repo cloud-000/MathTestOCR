@@ -882,6 +882,7 @@ def _ocr_page(
     cache_key=None,
     mask_boxes=None,
     validate=None,
+    merge_incomplete=None,
 ):
     """Whole-page OCR with runaway recovery; returns the page markdown.
 
@@ -977,7 +978,19 @@ def _ocr_page(
             slice_runaway = slice_runaway or part_runaway
         combined = "\n\n".join(parts)
         if validate(combined):
-            markdown = combined
+            # Slices recover problem starts that a bounded whole-page response
+            # missed, but they can lose a display equation or a line that
+            # straddles a slice boundary.  When the caller can identify
+            # problem blocks, keep the whole-page transcription and replace
+            # only the span around its missing marker(s).  Falling back to the
+            # combined slices retains the old, safe behavior for layouts that
+            # cannot be block-merged.
+            merged = (
+                merge_incomplete(markdown, combined)
+                if merge_incomplete is not None
+                else None
+            )
+            markdown = merged if merged is not None and validate(merged) else combined
             runaway = slice_runaway
             valid = True
     if not valid:
@@ -988,6 +1001,107 @@ def _ocr_page(
     if cache is not None and cache_key is not None and not runaway and valid:
         cache.put(cache_key, markdown)
     return markdown
+
+
+def _marker_blocks(markdown, match_marker):
+    """Return ordered ``(number, start, end)`` blocks from OCR markdown.
+
+    This deliberately recognizes only line-leading markers.  It is used before
+    ``parse_layout`` purely to localize a known omission; the real parser still
+    owns all the series-specific rules for glued markers, tables, restarts, and
+    numbered lists.  Repeated marker numbers are ambiguous (answer columns and
+    section restarts), so a document with any repeats is not mergeable.
+    """
+    starts = []
+    offset = 0
+    for line in markdown.splitlines(keepends=True):
+        probe = line.lstrip().lstrip("*_# ")
+        marker = match_marker(probe)
+        if marker is not None:
+            starts.append((marker[0], offset))
+        offset += len(line)
+    numbers = [number for number, _ in starts]
+    if not starts or len(numbers) != len(set(numbers)):
+        return None
+    return [
+        (number, start, starts[index + 1][1] if index + 1 < len(starts) else len(markdown))
+        for index, (number, start) in enumerate(starts)
+    ]
+
+
+def _merge_incomplete_problem_blocks(whole, sliced, match_marker):
+    """Fill missing whole-page problem blocks from a validated slice OCR.
+
+    A missing marker often means that the whole-page response joined that
+    problem onto the preceding block.  Replacing that predecessor-plus-gap
+    range prevents the recovered statement from being duplicated under the
+    preceding problem.  Blocks present in both transcriptions remain from the
+    whole-page OCR, which is the important non-lossy property of this recovery.
+    Returns ``None`` when the marker structure is not unambiguous.
+    """
+    whole_blocks = _marker_blocks(whole, match_marker)
+    sliced_blocks = _marker_blocks(sliced, match_marker)
+    if whole_blocks is None or sliced_blocks is None:
+        return None
+    whole_numbers = [number for number, _, _ in whole_blocks]
+    sliced_numbers = [number for number, _, _ in sliced_blocks]
+    missing = set(sliced_numbers) - set(whole_numbers)
+    # The slice OCR must be a strict superset of the whole-page anchors.  This
+    # avoids treating a differently-numbered section restart as a repair.
+    if (
+        not missing
+        or not set(whole_numbers).issubset(sliced_numbers)
+        or [number for number in sliced_numbers if number in whole_numbers]
+        != whole_numbers
+    ):
+        return None
+
+    sliced_by_number = {number: (start, end) for number, start, end in sliced_blocks}
+    replacements = []
+    index = 0
+    while index < len(sliced_numbers):
+        if sliced_numbers[index] not in missing:
+            index += 1
+            continue
+        first = index
+        while index + 1 < len(sliced_numbers) and sliced_numbers[index + 1] in missing:
+            index += 1
+        last = index
+
+        # Include the immediately preceding known block: it is where a missing
+        # marker's text was attached in the whole-page response.  If the first
+        # page marker is missing, inserting its slice block before the first
+        # whole marker is the only non-destructive option.
+        start_index = first - 1 if first else first
+        source_start = sliced_by_number[sliced_numbers[start_index]][0]
+        next_number = sliced_numbers[last + 1] if last + 1 < len(sliced_numbers) else None
+        source_end = (
+            sliced_by_number[next_number][0]
+            if next_number is not None
+            else len(sliced)
+        )
+
+        if first:
+            predecessor = sliced_numbers[first - 1]
+            whole_start = next(start for number, start, _ in whole_blocks if number == predecessor)
+        else:
+            following = next_number
+            whole_start = (
+                next(start for number, start, _ in whole_blocks if number == following)
+                if following is not None
+                else len(whole)
+            )
+        whole_end = (
+            next(start for number, start, _ in whole_blocks if number == next_number)
+            if next_number is not None
+            else len(whole)
+        )
+        replacements.append((whole_start, whole_end, sliced[source_start:source_end]))
+        index += 1
+
+    for start, end, replacement in reversed(replacements):
+        whole = whole[:start] + replacement + whole[end:]
+    return whole
 
 
 def _vertical_slices(image, count=3):
@@ -1120,6 +1234,13 @@ def process_image_markdown(
         # blank the whole page on the masking rung.
         mask_boxes=_figure_mask_boxes(detections),
         validate=validate_markdown,
+        merge_incomplete=(
+            (lambda whole, sliced: _merge_incomplete_problem_blocks(
+                whole, sliced, match_marker or nanonets_mod._match_marker
+            ))
+            if validate_markdown is not None
+            else None
+        ),
     )
     raw_markdown = markdown
     assign_detections = _without_sponsor_watermark_picture(
@@ -1588,6 +1709,13 @@ def process_solution_document(
             mask_boxes=_figure_mask_boxes(detections),
             validate=(
                 (lambda text, i=index: validate_page(i, text))
+                if validate_page is not None
+                else None
+            ),
+            merge_incomplete=(
+                (lambda whole, sliced: _merge_incomplete_problem_blocks(
+                    whole, sliced, match or nanonets_mod._match_marker
+                ))
                 if validate_page is not None
                 else None
             ),
