@@ -28,6 +28,21 @@ _SOLUTION_FURNITURE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# MPfG statements are numbered ``N.``, but solution packets consistently use
+# explicit ``Problem N`` headings.  Restrict solution segmentation to those
+# headings: a worked solution can legitimately contain an ordered list such as
+# ``1.``, ``2.``, ``3.``, which is not a sequence of new contest problems.
+_SOLUTION_MARKER_RE = re.compile(
+    r"^\s*(?:\*{1,2}\s*)?Problem\s+(\d+)\b", re.IGNORECASE
+)
+
+
+def _match_solution_marker(text: str):
+    match = _SOLUTION_MARKER_RE.match(text)
+    if match is None:
+        return None
+    return int(match.group(1)), match.end()
+
 
 class MpfgSeries(Series):
     name = "mpfg"
@@ -81,6 +96,10 @@ class MpfgSeries(Series):
         return strip_solution_page_furniture(
             markdown, line_patterns=(_SOLUTION_FURNITURE_RE,)
         )
+
+    def solution_match_marker(self):
+        """Use MPfG's explicit solution headings, not its bare statement IDs."""
+        return _match_solution_marker
 
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:
         """Parse the short answer for each problem from the solutions OCR.

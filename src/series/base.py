@@ -258,6 +258,17 @@ class Series:
         """
         return None
 
+    def solution_match_marker(self):
+        """Return the marker matcher used only for solution packets.
+
+        Most series use the same printed marker in statements and solutions, so
+        the default preserves :meth:`match_marker`.  A packet may instead use
+        explicit ``Problem N`` headings while its statements use bare ``N.``;
+        that series can opt out of treating numbered proof steps or list items
+        as new solution blocks without changing statement parsing.
+        """
+        return self.match_marker()
+
     def parse_solutions(self, full_text: str, test: Test = None) -> dict:
         """Segment the whole-test solution OCR into {problem_number: text}.
 
@@ -275,7 +286,7 @@ class Series:
         grouped: dict[int, list[str]] = {}
         for item in parse_layout(
             full_text,
-            self.match_marker(),
+            self.solution_match_marker(),
             split_marker_table_rows=opts.split_marker_table_rows,
             point_value_list_markers=opts.point_value_list_markers,
             strict_section_restarts=opts.strict_section_restarts,

@@ -443,7 +443,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
                 pages,
                 model,
                 args.threshold,
-                match=series.match_marker(),
+                match=series.solution_match_marker(),
                 cache=cache,
                 layout=_resolve_layout(series, args),
                 clean_page=series.clean_solution_markdown,
