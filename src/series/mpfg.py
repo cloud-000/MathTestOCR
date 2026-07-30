@@ -13,7 +13,20 @@ import re
 from pathlib import Path
 
 from .. import config
-from .base import Series, Test
+from .base import Series, Test, strip_solution_page_furniture
+
+
+_SOLUTION_FURNITURE_RE = re.compile(
+    r"^(?:"
+    # Older solution PDFs use the full "AT MATH PRIZE FOR GIRLS ..."
+    # masthead; newer ones omit the leading preposition.
+    r"(?:at\s+)?math\s+prize\s+for\s+girls\b.*"
+    r"|(?:the\s+)?advantage\s+testing(?:\s+foundation)?\b.*"
+    r"|(?:math\s+prize|olympiad)\s+\d{4}\s+solutions?"
+    r"|page\s+\d+"
+    r")$",
+    re.IGNORECASE,
+)
 
 
 class MpfgSeries(Series):
@@ -62,6 +75,12 @@ class MpfgSeries(Series):
         solution pages carry no "Answer:" label and `parse_answers` yields {}.
         """
         return self.solution_source(test)
+
+    def clean_solution_markdown(self, page_index, markdown):
+        """Remove MPfG's repeated solution masthead before page joining."""
+        return strip_solution_page_furniture(
+            markdown, line_patterns=(_SOLUTION_FURNITURE_RE,)
+        )
 
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:
         """Parse the short answer for each problem from the solutions OCR.

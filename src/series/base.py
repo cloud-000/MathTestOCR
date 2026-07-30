@@ -32,6 +32,28 @@ _SOLUTION_INDEX_RE = re.compile(
 )
 
 
+def strip_solution_page_furniture(markdown: str, *, line_patterns=(), inline_patterns=()):
+    """Remove a series' explicit running page furniture from solution OCR.
+
+    The caller supplies narrowly-scoped regular expressions for its own
+    masthead/footer vocabulary.  Patterns are applied to normalized *lines*;
+    this intentionally avoids a global uppercase/title heuristic that could
+    delete legitimate mathematical prose.  The helper is idempotent and is
+    meant for ``clean_solution_markdown`` only, leaving raw answer OCR intact.
+    """
+    text = markdown
+    for pattern in inline_patterns:
+        text = pattern.sub("", text)
+    kept = []
+    for line in text.splitlines():
+        plain = re.sub(r"[*_#]", "", line).strip()
+        plain = re.sub(r"\s+", " ", plain)
+        if any(pattern.search(plain) for pattern in line_patterns):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
 def numbered_answers_in_line(line: str):
     """Extract answer-key entries from one OCR'd line.
 

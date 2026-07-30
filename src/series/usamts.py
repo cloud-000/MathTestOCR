@@ -23,7 +23,7 @@ from typing_extensions import override
 
 from .. import anchors, config
 from ..nanonets import normalize_img_placeholders
-from .base import Series, Test
+from .base import Series, Test, strip_solution_page_furniture
 
 # Every statement in the corpus uses the distinctive "N/R/Y." form.  Do not
 # fall back to bare "N." markers here: USAMTS booklets begin with numbered
@@ -121,6 +121,21 @@ _SOLUTION_TRAILING_RE = re.compile(
     r"Please\s+visit\s+.*usamts\.org.*solution\s+submission\b"
     r")"
 )
+_SOLUTION_EDITORIAL_FURNITURE_RE = re.compile(
+    r"^(?:"
+    r"solutions?\s+edited\s+by\b.*"
+    r"|all\s+other\s+problems?\s+and\s+solutions?\s+by\b.*"
+    r"|page\s+\d+"
+    r")$",
+    re.IGNORECASE,
+)
+_SOLUTION_EDITORIAL_TAIL_RE = re.compile(
+    r"\s*[*_]*(?:"
+    r"solutions?\s+edited\s+by\b.*"
+    r"|all\s+other\s+problems?\s+and\s+solutions?\s+by\b.*"
+    r")[*_]*\.?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def _cut_at_separator(text: str) -> str:
@@ -159,7 +174,10 @@ def _clean_solution_markdown(text: str) -> str:
     boundary = _SOLUTION_TRAILING_RE.search(text)
     if boundary:
         text = text[: boundary.start()]
-    return text.strip()
+    text = _SOLUTION_EDITORIAL_TAIL_RE.sub("", text)
+    return strip_solution_page_furniture(
+        text, line_patterns=(_SOLUTION_EDITORIAL_FURNITURE_RE,)
+    )
 
 
 def _headerless_solution(lines):

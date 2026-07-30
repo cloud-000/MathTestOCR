@@ -25,7 +25,7 @@ import re
 from pathlib import Path
 
 from .. import config
-from .base import Series, Test, numbered_answers_in_line
+from .base import Series, Test, numbered_answers_in_line, strip_solution_page_furniture
 
 _TAG_RE = re.compile(r"<[^>]+>")
 # A line that is only table scaffolding (or blank). The key box is often OCR'd
@@ -63,6 +63,17 @@ _BACK_COVER_RE = re.compile(
 # "Proof School" footer line does not, so this lands on the true content boundary.
 _PDF_COPYRIGHT_RE = re.compile(
     r"proof school\s*\d{4}|\d{4}\s*proof school", re.IGNORECASE
+)
+_RUNNING_SOLUTION_FURNITURE_RE = re.compile(
+    r"^(?:"
+    r"(?:★\s*)?(?:regional|national)\s+level(?:\s*★)?"
+    r"|the\s+mandelbrot\s+competition"
+    r"|round\s+(?:one|two|three|four|\d+)\s+solutions?"
+    r"|greater\s+testing\s+concepts"
+    r"|www\.mandelbrot\.org"
+    r"|page\s+\d+"
+    r")$",
+    re.IGNORECASE,
 )
 
 
@@ -236,7 +247,10 @@ class MandelbrotSeries(Series):
         document's end (`_strip_back_cover`) is dropped for the same reason: its
         credits/boilerplate would otherwise trail into the last solution.
         """
-        return _strip_back_cover(_split_answer_key(markdown)[1])
+        text = _strip_back_cover(_split_answer_key(markdown)[1])
+        return strip_solution_page_furniture(
+            text, line_patterns=(_RUNNING_SOLUTION_FURNITURE_RE,)
+        )
 
     def solution_figure_floor(self, pdf_page, image):
         """Fence out the back-cover credits box printed after the last solution.

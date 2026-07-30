@@ -67,7 +67,8 @@ _HTML_RE = re.compile(r"<[^>]+>")
 # uppercase-line filter: a solution may legitimately use an all-caps variable
 # name or a round word such as "general" in its mathematical prose.
 _SMT_LOGO_IMG_RE = re.compile(
-    r"<img\b[^>]*>.*?(?:stanford\s+math\s+tournament|\bSMT\b|\bASMT\b).*?</img>",
+    r"<img\b[^>]*>.*?(?:stanford\s+(?:math\s+)?(?:20\s*)?\d{2}\s+"
+    r"tournament|stanford\s+math\s+tournament|\bSMT\b|\bASMT\b).*?</img>",
     re.IGNORECASE | re.DOTALL,
 )
 _PAGE_NUMBER_RE = re.compile(
@@ -85,8 +86,25 @@ _HEADER_METADATA_RE = re.compile(
     r"(?:advanced|algebra|calculus|combination|combinatorics|computer\s+science|"
     r"discrete(?:\s+math)?|general|geometry|guts|integration\s+bee(?:\s+qualification)?|"
     r"number\s+theory|team(?:\s+round)?)(?:\s+(?:test|round))?(?:\s+solutions?)?"
-    r"|(?:january|february|march|april|may)\s+\d{1,2},\s+20\d{2}"
+    r"|(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+\d{1,2},\s+20\d{2}"
     r"|(?:test|round)\s+solutions?"
+    r")$",
+    re.IGNORECASE,
+)
+# Older packets repeat only this title/date pair, without a Stanford identity
+# line on every page.  These forms are still explicit page furniture: require
+# a round/test/tiebreaker plus "Solutions", never a bare subject name.
+_STANDALONE_HEADER_METADATA_RE = re.compile(
+    r"^(?:"
+    r"(?:advanced\s+topics|algebra|calculus|combination|combinatorics|"
+    r"computer\s+science|discrete(?:\s+math)?|general|geometry|guts|"
+    r"integration\s+bee(?:\s+qualification)?|number\s+theory|team)\s+"
+    r"(?:test|round|tiebreaker)(?:\s+and)?\s+solutions?"
+    r"(?:\s+(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+\d{1,2},\s+20\d{2})?"
+    r"|(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+\d{1,2},\s+20\d{2}"
     r")$",
     re.IGNORECASE,
 )
@@ -271,6 +289,9 @@ class SmtSeries(Series):
                     continue
             if _HEADER_ID_RE.match(plain):
                 in_header = True
+                index += 1
+                continue
+            if _STANDALONE_HEADER_METADATA_RE.match(plain):
                 index += 1
                 continue
             if in_header and (

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing_extensions import override
 
 from .. import answer_llm, config
-from .base import Series, Test, numbered_answers_in_line
+from .base import Series, Test, numbered_answers_in_line, strip_solution_page_furniture
 from .smt import _boxed_answer
 
 # Labels arrive markdown-emphasized from the OCR ("**Answer:** 45",
@@ -39,6 +39,20 @@ _SOLUTION_RE = re.compile(
 )
 _RUNNING_HEADER_RE = re.compile(
     r"^\s*B(?:ERKELEY\s+MINI\s+|M)?MT\s+20\d{2}\b.*$", re.IGNORECASE
+)
+_RUNNING_TITLE_RE = re.compile(
+    r"^(?:"
+    r"(?:algebra|analysis|calculus|combinatorics|discrete|geometry|general|"
+    r"number\s+theory|pacer|speed|team|individual|guts|tournament)\s+"
+    r"(?:test|round|tiebreaker)(?:\s+and)?\s+(?:solutions?|answer\s+key)"
+    r"|(?:analysis|individual|team)\s+(?:solutions?|answer\s+key)"
+    r"|(?:geometry|discrete)\s+round"
+    r"|bmmt\b.*"
+    r"|(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+\d{1,2}(?:\s*[–—-]\s*\d{1,2})?,?\s+20\d{2}"
+    r"|page\s+\d+"
+    r")$",
+    re.IGNORECASE,
 )
 _TOURNAMENT_HEADING_RE = re.compile(
     r"^\s*(?:\d+\.\s*)?(?:\*{1,2}\s*)?"
@@ -289,12 +303,9 @@ class BmtSeries(Series):
     @staticmethod
     def _strip_running_furniture(markdown: str) -> str:
         """Remove repeated BMT headers without touching a problem statement."""
-        lines = []
-        for line in markdown.splitlines():
-            if _RUNNING_HEADER_RE.match(line.strip("*_# ")):
-                continue
-            lines.append(line)
-        return "\n".join(lines)
+        return strip_solution_page_furniture(
+            markdown, line_patterns=(_RUNNING_HEADER_RE, _RUNNING_TITLE_RE)
+        )
 
     @override
     def clean_statement_markdown(self, page_index: int, markdown: str) -> str:

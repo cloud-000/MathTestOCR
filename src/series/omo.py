@@ -18,7 +18,7 @@ from typing_extensions import override
 
 from .. import config
 from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
-from .base import Series, Test
+from .base import Series, Test, strip_solution_page_furniture
 
 
 _ANSWER_LINE_RE = re.compile(
@@ -31,6 +31,15 @@ _THE_ANSWER_IS_RE = re.compile(
     r"\bThe\s+answer\s+is\s+([A-Za-z0-9_/\-+\\.\{\}\(\)]+)", re.IGNORECASE
 )
 _PROPOSED_RE = re.compile(r"^\s*Proposed\s+by\b", re.IGNORECASE)
+_OMO_RUNNING_FURNITURE_RE = re.compile(
+    r"^(?:"
+    r"(?:OMO|online\s+math\s+open)\b.*"
+    r"|official\s+solutions?"
+    r"|(?:fall|spring|winter)\s+\d{4}"
+    r"|page\s+\d+"
+    r")$",
+    re.IGNORECASE,
+)
 
 
 def _boxed_answer(block: str) -> str:
@@ -91,6 +100,13 @@ class OmoSeries(Series):
     @override
     def answer_source(self, test: Test):
         return self.solution_source(test)
+
+    @override
+    def clean_solution_markdown(self, page_index: int, markdown: str) -> str:
+        """Drop OMO's repeated edition/"Official Solutions" page furniture."""
+        return strip_solution_page_furniture(
+            markdown, line_patterns=(_OMO_RUNNING_FURNITURE_RE,)
+        )
 
     @override
     def scrape_answers(self, test: Test) -> dict:

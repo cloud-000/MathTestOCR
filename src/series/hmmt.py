@@ -23,7 +23,7 @@ from typing_extensions import override
 
 from .. import anchors, answer_llm, config
 from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
-from .base import Series, Test
+from .base import Series, Test, strip_solution_page_furniture
 
 
 _ANSWER_RE = re.compile(
@@ -90,6 +90,16 @@ _BANNER_RE = re.compile(
 )
 _HMMT_DATED_HEADER_RE = re.compile(
     r"(?:\*{0,2}|#{1,6}\s*)?HMMT(?:\s+[A-Za-z]+)?\s+\d{4}\b[^\n]*",
+    re.IGNORECASE,
+)
+_HMMT_ROUND_TITLE_RE = re.compile(
+    r"^(?:"
+    r"(?:algebra|calculus|combinatorics|geometry|general|number\s+theory|"
+    r"team|guts|advanced\s+topics|oral)\s+(?:test|round)(?:\s+solutions?)?"
+    r"|(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+\d{1,2}\s+"
+    r"(?:january|february|march|april|may|november|december)\s+20\d{2}"
+    r"|page\s+\d+"
+    r")$",
     re.IGNORECASE,
 )
 _COPYRIGHT_LINE_RE = re.compile(
@@ -165,6 +175,9 @@ def _clean_hmmt_markdown(markdown: str, *, strip_lists: bool = False) -> str:
     text = _TIME_LIMIT_RE.sub("", text)
     text = _FORM_LINE_RE.sub("", text)
     text = _FORM_TAIL_RE.sub("", text)
+    text = strip_solution_page_furniture(
+        text, line_patterns=(_HMMT_ROUND_TITLE_RE,)
+    )
     if strip_lists:
         text = _LIST_TAG_RE.sub("\n", text)
     lines = []
