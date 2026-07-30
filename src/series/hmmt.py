@@ -380,7 +380,7 @@ class HmmtSeries(Series):
         return self.solution_source(test)
 
     @override
-    def parse_solutions(self, full_text):
+    def parse_solutions(self, full_text, test: Test = None):
         """Drop each restated statement and keep only its worked solution.
 
         Older HMIC documents put the solution directly after ``Answer:``;

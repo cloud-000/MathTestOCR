@@ -306,7 +306,7 @@ class UsamtsSeries(Series):
         return sol if sol.exists() else None
 
     @override
-    def parse_solutions(self, full_text):
+    def parse_solutions(self, full_text, test: Test = None):
         """Parse a USAMTS solutions packet into {problem_number: [solution, ...]}.
 
         Problems are split on the bolded date marker ("**3/1/12.**"); within each

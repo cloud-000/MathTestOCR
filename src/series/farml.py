@@ -275,7 +275,7 @@ class FarmlSeries(Series):
         return answers
 
     @override
-    def parse_solutions(self, full_text: str) -> dict:
+    def parse_solutions(self, full_text: str, test: Test = None) -> dict:
         """Segment solution document OCR text into {problem_number: solution_text}."""
         grouped: dict[int, list[str]] = {}
         for item in parse_layout(full_text, self.match_marker()):
