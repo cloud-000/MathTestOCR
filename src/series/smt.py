@@ -8,9 +8,10 @@ On-disk layout (data dir is ``SMT/out``)::
 ``<tournament>`` is ``SMT``, ``ASMT``, or ``SM3``. Test IDs mirror their path
 joined by underscores: ``SMT_2024_algebra``, ``ASMT_2016_geometry``.
 
-The ``power`` round is skipped by `discover_tests` (a proof-based team round we
-don't parse). Every other round numbers its problems plainly (``1.``, ``2.``,
-...), so the default marker matcher fits. Unlike BMT, the solutions PDF prints no ``Answer:`` line:
+The ``power`` round and SM3's diagrammatic ``construction`` challenge are skipped
+by `discover_tests`: neither is a conventional numbered problem set. Every other
+round numbers its problems plainly (``1.``, ``2.``, ...), so the default marker
+matcher fits. Unlike BMT, the solutions PDF prints no ``Answer:`` line:
 each solution restates the problem, gives the worked solution under a
 ``Solution:`` label, and ends with the final answer in a ``\\boxed{...}``.
 `parse_solutions` keeps the text from ``Solution:`` onward; `parse_answers` reads
@@ -24,7 +25,7 @@ from pathlib import Path
 
 from typing_extensions import override
 
-from .. import config
+from .. import answer_llm, config
 from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
 from .base import Series, Test
 
@@ -44,6 +45,11 @@ _INLINE_ANSWER_RE = re.compile(
     r"(.*?)(?=(?:\*{0,2}\s*)?Solution\b|$)",
     re.IGNORECASE,
 )
+_ANSWER_BLOCK_RE = re.compile(
+    rf"^\s*{_EMPH}\s*(?:Answer|Ans)\b\s*{_EMPH}\s*:?\s*"
+    rf"(.*?)(?=^\s*{_EMPH}\s*Solution(?:\s+\d+)?\b|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
 _CODED_MARKER_RE = re.compile(
     r"^\s*(?:[*_#]{0,3}[A-Z]{1,4}\d{1,3}[*_#]{0,3}\s+)?"
     r"(?:Problem|Question|Q)?\s*(\d+)\s*[.:]\s*",
@@ -59,6 +65,22 @@ _HTML_RE = re.compile(r"<[^>]+>")
 # non-reading order (and sometimes leak bare page-break numbers), so applying
 # the same page-level assertion series-wide creates false failures.
 _SOURCE_VALIDATED_SOLUTION_TESTS = {"SMT_2024_team"}
+# These packets use flat, contiguous problem numbering.  Their prose contains
+# numbered conditions/cases, which must never be promoted to a restarted
+# section.  Keep the constraint test-specific: some earlier Team packets do
+# intentionally append a proof round whose printed numbering restarts at 1.
+_FLAT_NUMBERING_TESTS = {
+    "SM3_2025_treelay",
+    "SMT_2023_guts",
+    "SMT_2024_discrete",
+    "SMT_2025_guts",
+    "SMT_2025_team",
+}
+# This packet's first solution contains an ordinary ``1./2./3.`` case list.
+# Unlike problem starts, each real block has an explicit printed answer before
+# its next real start, so use that reliable local delimiter instead of trying
+# to infer intent from indistinguishable bare numbers.
+_ANSWER_LABELED_BLOCK_TESTS = {"SMT_2013_advanced-tiebreaker"}
 
 
 class SmtSeries(Series):
@@ -79,7 +101,7 @@ class SmtSeries(Series):
         return [
             Test(id="_".join(pdf.relative_to(root).parts[:-1]), source=pdf)
             for pdf in sorted(root.glob("**/test.pdf"))
-            if pdf.parent.name != "power"  # power round: not parsed (see module docstring)
+            if pdf.parent.name not in {"power", "construction"}
         ]
 
     @override
@@ -93,6 +115,7 @@ class SmtSeries(Series):
         problem 1 (the title text above it is a left-margin "start" that defeats
         the drop-above-first-problem guard; see pipeline._assign_pictures).
         """
+        flat = getattr(self, "_active_test_id", "") in _FLAT_NUMBERING_TESTS
         return config.LayoutOptions(
             inline_figures=True,
             header_picture_frac=0.07,
@@ -100,6 +123,8 @@ class SmtSeries(Series):
             # a display equation.  Without this, parse_layout absorbs the next
             # problem into the preceding solution.
             split_glued_bare_markers=True,
+            strict_section_restarts=flat,
+            consecutive_problem_markers=flat,
         )
 
     @override
@@ -163,10 +188,10 @@ class SmtSeries(Series):
         Treelay uses ``1A`` through ``5H`` instead, mapped column-major to the
         pipeline's integer keys 1 through 40.
         """
-        treelay = getattr(self, "_active_test_id", "").endswith("_treelay")
-
         def matcher(text):
-            if treelay:
+            # This callable is captured before ``test_pages`` activates the
+            # test, so consult active state at call time rather than here.
+            if getattr(self, "_active_test_id", "").endswith("_treelay"):
                 m = _TREELAY_MARKER_RE.match(text)
                 if m:
                     return ((ord(m.group(2).upper()) - ord("A")) * 5 + int(m.group(1)), m.end())
@@ -200,10 +225,18 @@ class SmtSeries(Series):
 
         Figure placeholders are retained so DETR crops stay inline.
         """
+        if test is not None and test.id in _ANSWER_LABELED_BLOCK_TESTS:
+            return {
+                number: _solution_body(block)
+                for number, block in _answer_labeled_blocks(full_text, self.match_marker()).items()
+            }
+
         grouped: dict[int, list[str]] = {}
         for item in parse_layout(
             full_text,
             self.match_marker(),
+            strict_section_restarts=self.layout_options().strict_section_restarts,
+            consecutive_problem_markers=self.layout_options().consecutive_problem_markers,
             split_glued_bare_markers=self.layout_options().split_glued_bare_markers,
         ):
             if item["problem"] is None:
@@ -225,18 +258,30 @@ class SmtSeries(Series):
         if test.id.endswith("_treelay"):
             return _treelay_answers("\n".join(pages_markdown))
 
+        if test.id in _ANSWER_LABELED_BLOCK_TESTS:
+            return {
+                number: value
+                for number, block in _answer_labeled_blocks(
+                    "\n\n".join(pages_markdown), self.match_marker()
+                ).items()
+                if (value := _answer_value(block))
+            }
+
         answers: dict[int, str] = {}
         grouped: dict[int, list[str]] = {}
         for item in parse_layout(
             "\n\n".join(pages_markdown),
             self.match_marker(),
+            strict_section_restarts=self.layout_options().strict_section_restarts,
+            consecutive_problem_markers=self.layout_options().consecutive_problem_markers,
             split_glued_bare_markers=self.layout_options().split_glued_bare_markers,
         ):
             if item["problem"] is None or item["kind"] != "text":
                 continue
             grouped.setdefault(item["problem"], []).append(item["text"])
         for n, parts in grouped.items():
-            value = _answer_value("\n".join(parts))
+            block = "\n".join(parts)
+            value = _answer_value(block) or answer_llm.extract(block)
             if value:
                 answers[n] = value
         statement_numbers = _statement_numbers(test, self.match_marker())
@@ -326,6 +371,11 @@ def _clean_answer(value: str):
 
 def _answer_value(block: str):
     """Prefer SMT's explicit ``Answer:`` label, falling back to a final box."""
+    # A display answer is commonly placed on the line *after* ``Answer:``;
+    # line-by-line parsing sees the label but an empty value in that layout.
+    for match in _ANSWER_BLOCK_RE.finditer(block):
+        if value := _clean_answer(match.group(1)):
+            return value
     for line in block.splitlines():
         match = _ANSWER_RE.match(line)
         if match and (value := _clean_answer(match.group(1))):
@@ -336,6 +386,32 @@ def _answer_value(block: str):
         if match and (value := _clean_answer(match.group(1))):
             return value
     return _boxed_answer(block)
+
+
+def _answer_labeled_blocks(full_text: str, match_marker):
+    """Split a solution packet at starts whose candidate block has ``Answer:``.
+
+    This is intentionally narrow: SMT 2013 Advanced Tiebreaker numbers cases
+    exactly like problems, but only actual problem blocks print an answer label.
+    """
+    candidates = []
+    offset = 0
+    for line in full_text.splitlines(keepends=True):
+        marker = match_marker(line.lstrip("*_# "))
+        if marker is not None:
+            candidates.append((marker[0], offset))
+        offset += len(line)
+
+    accepted = []
+    for index, (number, start) in enumerate(candidates):
+        end = candidates[index + 1][1] if index + 1 < len(candidates) else len(full_text)
+        if any(_ANSWER_RE.match(line) for line in full_text[start:end].splitlines()):
+            accepted.append((number, start))
+
+    return {
+        number: full_text[start : accepted[index + 1][1] if index + 1 < len(accepted) else len(full_text)]
+        for index, (number, start) in enumerate(accepted)
+    }
 
 
 def _treelay_answers(markdown: str) -> dict[int, str]:
