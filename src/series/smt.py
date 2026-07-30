@@ -60,6 +60,38 @@ _TREELAY_CELL_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.IGNORECASE | re
 _TREELAY_ROW_RE = re.compile(r"<tr\b.*?</tr>", re.IGNORECASE | re.DOTALL)
 _HTML_RE = re.compile(r"<[^>]+>")
 
+# Solution PDFs repeat a tournament banner at the top of every page.  A
+# continuation page has no new problem marker before its first prose, so the
+# banner otherwise becomes part of the preceding problem when pages are joined.
+# These are deliberately narrow identity/metadata patterns, not a generic
+# uppercase-line filter: a solution may legitimately use an all-caps variable
+# name or a round word such as "general" in its mathematical prose.
+_SMT_LOGO_IMG_RE = re.compile(
+    r"<img\b[^>]*>.*?(?:stanford\s+math\s+tournament|\bSMT\b|\bASMT\b).*?</img>",
+    re.IGNORECASE | re.DOTALL,
+)
+_PAGE_NUMBER_RE = re.compile(
+    r"^\s*(?:<page_number\b[^>]*>\s*\d+\s*</page_number>|(?:page\s+)?\d+)\s*$",
+    re.IGNORECASE,
+)
+_HEADER_ID_RE = re.compile(
+    r"^(?:stanford\s+math\s+tournament\b.*|(?:SMT|ASMT)\s+20\d{2}\b.*)$",
+    re.IGNORECASE,
+)
+_SPLIT_STANFORD_HEADER_RE = re.compile(r"^stanford\s+math$", re.IGNORECASE)
+_SPLIT_TOURNAMENT_RE = re.compile(r"^tournament$", re.IGNORECASE)
+_HEADER_METADATA_RE = re.compile(
+    r"^(?:"
+    r"(?:advanced|algebra|calculus|combination|combinatorics|computer\s+science|"
+    r"discrete(?:\s+math)?|general|geometry|guts|integration\s+bee(?:\s+qualification)?|"
+    r"number\s+theory|team(?:\s+round)?)(?:\s+(?:test|round))?(?:\s+solutions?)?"
+    r"|(?:january|february|march|april|may)\s+\d{1,2},\s+20\d{2}"
+    r"|(?:test|round)\s+solutions?"
+    r")$",
+    re.IGNORECASE,
+)
+_HEADER_SEPARATOR_RE = re.compile(r"^(?:---+|[_*#\s]+)$")
+
 # Only this packet has a source-confirmed OCR omission that needs the expensive
 # source-text completeness recovery.  Older PDFs expose their text layer in
 # non-reading order (and sometimes leak bare page-break numbers), so applying
@@ -209,6 +241,49 @@ class SmtSeries(Series):
         # the copies with a horizontal rule, so discard the second before marker
         # grouping can append it to the first problem.
         return re.split(r"\n\s*(?:---|\*\*\*)\s*\n", markdown, maxsplit=1)[0]
+
+    @override
+    def clean_solution_markdown(self, page_index, markdown):
+        """Remove SMT running headers and page numbers from one solution page.
+
+        This runs before both solution figure assignment and cross-page text
+        reconstruction.  Raw OCR remains available to ``parse_answers``.
+        """
+        markdown = _SMT_LOGO_IMG_RE.sub("", markdown)
+        lines = markdown.splitlines()
+        cleaned = []
+        in_header = False
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            # Trim markdown emphasis before classifying only; keep all genuine
+            # content exactly as transcribed.
+            plain = re.sub(r"[*_#]", "", line).strip()
+            plain = re.sub(r"\s+", " ", plain)
+            if _PAGE_NUMBER_RE.match(line):
+                index += 1
+                continue
+            if _SPLIT_STANFORD_HEADER_RE.match(plain):
+                following = re.sub(r"[*_#]", "", lines[index + 1]).strip() if index + 1 < len(lines) else ""
+                if _SPLIT_TOURNAMENT_RE.match(following):
+                    in_header = True
+                    index += 2
+                    continue
+            if _HEADER_ID_RE.match(plain):
+                in_header = True
+                index += 1
+                continue
+            if in_header and (
+                _HEADER_METADATA_RE.match(plain)
+                or _HEADER_SEPARATOR_RE.match(plain)
+            ):
+                index += 1
+                continue
+            if plain:
+                in_header = False
+            cleaned.append(line)
+            index += 1
+        return "\n".join(cleaned).strip()
 
     @override
     def solution_source(self, test):
