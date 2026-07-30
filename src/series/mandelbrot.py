@@ -75,6 +75,11 @@ _RUNNING_SOLUTION_FURNITURE_RE = re.compile(
     r")$",
     re.IGNORECASE,
 )
+# The right-side solution masthead is a logo plus a decorative title, so DETR
+# sometimes reports it as a Picture.  The born-digital text layer reliably
+# preserves the adjacent round title even when it does not preserve every
+# stylized title glyph.
+_ROUND_SOLUTIONS_RE = re.compile(r"\bround\s+(?:one|two|three|four|five|\d+)\s+solutions?\b", re.IGNORECASE)
 
 
 def _strip_back_cover(text: str) -> str:
@@ -90,7 +95,12 @@ def _is_answer_key_heading(line: str) -> bool:
     letters* ("<strong>A</strong><sub>NSWER</sub> ..."), so tags become nothing
     and all spacing is dropped before matching.
     """
-    return "answerkey" in re.sub(r"[^a-z]", "", _TAG_RE.sub("", line).lower())
+    normalized = re.sub(r"[^a-z]", "", _TAG_RE.sub("", line).lower())
+    # Small-caps OCR may emit both the enlarged initial and its subscript
+    # counterpart: A + ANSWER, K + KEY -> AANSWERKKEY.  Collapsing runs only
+    # affects this visual duplication; the phrase test remains specific.
+    normalized = re.sub(r"([a-z])\1+", r"\1", normalized)
+    return "answerkey" in normalized
 
 
 def _split_answer_key(text: str):
@@ -303,6 +313,38 @@ class MandelbrotSeries(Series):
         if not ys or not pdf_page.rect.height:
             return None
         return min(ys) * (image.height / pdf_page.rect.height)
+
+    def solution_figure_exclusion_regions(self, pdf_page, image):
+        """Locate the right-side logo/title masthead from its round branding.
+
+        Early solution sheets place genuine diagrams in the left content column
+        and a Mandelbrot Competition masthead in the right column.  Rather than
+        widening shared header or margin filters, use the PDF text-layer's
+        ``Round ... Solutions`` label as an anchor and fence only its compact
+        branding block.  The expansion covers the adjacent fractal logo and
+        decorative competition title, which are not consistently text-layer
+        searchable themselves.
+        """
+        if not pdf_page.rect.width or not pdf_page.rect.height:
+            return ()
+        regions = []
+        scale_x = image.width / pdf_page.rect.width
+        scale_y = image.height / pdf_page.rect.height
+        for block in pdf_page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                text = "".join(span["text"] for span in line["spans"])
+                if not _ROUND_SOLUTIONS_RE.search(text):
+                    continue
+                x0, y0, x1, y1 = line["bbox"]
+                # PDF points, measured from the round-title anchor.  This is
+                # intentionally a local masthead rectangle, not a page margin.
+                regions.append((
+                    max(0, x0 - 170) * scale_x,
+                    max(0, y0 - 70) * scale_y,
+                    min(pdf_page.rect.width, x1 + 20) * scale_x,
+                    min(pdf_page.rect.height, y1 + 40) * scale_y,
+                ))
+        return regions
 
     def parse_answers(self, test, pages_markdown):
         """Read the "Answer Key" box from the first page that carries one."""

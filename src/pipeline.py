@@ -1634,6 +1634,7 @@ def process_solution_document(
     source_pdf=None,
     match_solution=None,
     figure_floor=None,
+    figure_exclusion_regions=None,
     validate_page=None,
 ):
     """OCR a solution document and crop its figures, assigned to problems.
@@ -1666,6 +1667,11 @@ def process_solution_document(
     layer, so it runs only when `source_pdf` is a PDF; None (any page without the
     marker) keeps every figure. This is the figure-side partner of `clean_page`'s
     back-cover text stripping.
+
+    `figure_exclusion_regions` is the series' optional
+    `Series.solution_figure_exclusion_regions` hook.  It returns narrowly
+    identified rendered rectangles (usually anchored in the source PDF text
+    layer); Pictures whose centres land in one are solution-page furniture.
     """
     layout = layout or config.LayoutOptions()
     thr = threshold if threshold is not None else config.NANONETS_DETECT_THRESHOLD
@@ -1768,6 +1774,17 @@ def process_solution_document(
             floor = figure_floor(doc[pdf_index], image)
             if floor is not None:
                 pics = [p for p in pics if (p["box"][1] + p["box"][3]) / 2 < floor]
+        if pics and doc is not None and figure_exclusion_regions is not None:
+            regions = figure_exclusion_regions(doc[pdf_index], image)
+            if regions:
+                pics = [
+                    p for p in pics
+                    if not any(
+                        x0 <= (p["box"][0] + p["box"][2]) / 2 <= x1
+                        and y0 <= (p["box"][1] + p["box"][3]) / 2 <= y1
+                        for x0, y0, x1, y1 in regions
+                    )
+                ]
         assigned = None
         if pics and doc is not None:
             markers, gutter = _text_layer_markers(doc[pdf_index], image, match, carry)

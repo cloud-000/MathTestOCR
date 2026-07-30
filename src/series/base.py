@@ -318,6 +318,17 @@ class Series:
         """
         return None
 
+    def solution_figure_exclusion_regions(self, pdf_page, image):
+        """Return rendered rectangles that contain solution-page furniture.
+
+        This opt-in hook is for series whose source PDF text layer can identify
+        a small branded region that DETR sees as a Picture.  Each returned
+        ``(x0, y0, x1, y1)`` rectangle is in rendered-image coordinates; a
+        detected Picture is dropped only when its centre is inside one.  The
+        default deliberately keeps every figure.
+        """
+        return ()
+
     def solution_match_marker(self):
         """Return the marker matcher used only for solution packets.
 

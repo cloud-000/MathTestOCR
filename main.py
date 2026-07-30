@@ -464,6 +464,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
                 source_pdf=sol,
                 match_solution=series.solution_index_marker,
                 figure_floor=series.solution_figure_floor,
+                figure_exclusion_regions=series.solution_figure_exclusion_regions,
                 validate_page=series.validate_solution_markdown,
             )
             cleaned = "\n\n".join(
