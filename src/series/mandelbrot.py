@@ -35,9 +35,9 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _TABLE_MARKUP_ONLY_RE = re.compile(
     r"^\s*(?:</?(?:table|thead|tbody|tr|td|th)\b[^>]*>\s*)*$", re.IGNORECASE
 )
-# A key entry is a bare value ("12", "9/17", "3025"); solution prose after a
-# marker ("1. It is possible to fit...") is far longer. Used to find where the
-# box ends.
+# A key entry is usually a bare value ("12", "9/17", "3025"); solution prose
+# after a marker ("1. It is possible to fit...") is far longer.  This is used
+# only by the fallback for OCR that did not preserve the answer-key table.
 _MAX_ANSWER_LEN = 24
 
 # The solutions PDF closes with a back cover -- a "© Proof School <year>"
@@ -96,39 +96,67 @@ def _is_answer_key_heading(line: str) -> bool:
 def _split_answer_key(text: str):
     """Split OCR markdown into ``(answers, text_without_the_key)``.
 
-    The key region starts at the "Answer Key" heading (entries may share that
-    line when the box is OCR'd as one row) and ends at the first line that is
-    neither blank/markup-only nor made of short ``N. answer`` entries -- in
-    practice solution 1's opening prose. Returns ``({}, text)`` unchanged when
-    no heading or no entries are found, so pages without a key pass through.
+    When OCR preserves the enclosing HTML table, that table is the authoritative
+    boundary: every numbered entry inside it is an answer, regardless of its
+    rendered length.  The short-entry heuristic remains only as a conservative
+    fallback for malformed/non-table OCR.  Returns ``({}, text)`` unchanged
+    when no heading or no entries are found, so pages without a key pass through.
     """
     lines = text.splitlines()
     start = next((i for i, ln in enumerate(lines) if _is_answer_key_heading(ln)), None)
     if start is None:
         return {}, text
-    answers = {}
-
-    def consume(line, allow_leading=False):
+    def consume(line, answers, allow_leading=False, max_answer_len=None):
         """Record the line's entries; False if it isn't a pure answer-key line."""
         leading, pairs = numbered_answers_in_line(line)
         if (leading and not allow_leading) or not pairs:
             return False
-        if any(len(a) > _MAX_ANSWER_LEN for _, a in pairs):
+        if max_answer_len is not None and any(
+            len(a) > max_answer_len for _, a in pairs
+        ):
             return False
         for n, a in pairs:
             if a:
                 answers.setdefault(n, a)
         return True
 
+    # Every known Mandelbrot key is rendered as an HTML table.  Its closing tag
+    # is a structural boundary, unlike an answer-length cutoff: valid answers
+    # may be moderately long LaTex expressions or lists of values.
+    table_start = max(
+        (i for i in range(start, -1, -1) if "<table" in lines[i].lower()),
+        default=None,
+    )
+    if table_start is not None and any(
+        "</table" in line.lower() for line in lines[table_start:start]
+    ):
+        table_start = None  # the nearest preceding table does not enclose the heading
+    table_end = (
+        next(
+            (i for i in range(start, len(lines)) if "</table" in lines[i].lower()),
+            None,
+        )
+        if table_start is not None
+        else None
+    )
+    if table_start is not None and table_end is not None:
+        answers = {}
+        for i in range(table_start, table_end + 1):
+            consume(lines[i], answers, allow_leading=(i == start))
+        if answers:
+            return answers, "\n".join(lines[:table_start] + lines[table_end + 1 :])
+
+    answers = {}
+
     # Entries can share the heading line (the box OCR'd as one row); the
     # heading text itself is the leading part, so it is allowed there.
-    consume(lines[start], allow_leading=True)
+    consume(lines[start], answers, allow_leading=True, max_answer_len=_MAX_ANSWER_LEN)
     end = start + 1
     for i in range(start + 1, len(lines)):
         if _TABLE_MARKUP_ONLY_RE.match(lines[i]):
             end = i + 1  # blank / table-scaffolding line inside the box
             continue
-        if not consume(lines[i]):
+        if not consume(lines[i], answers, max_answer_len=_MAX_ANSWER_LEN):
             break
         end = i + 1
     if not answers:
