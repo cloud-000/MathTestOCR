@@ -295,6 +295,7 @@ def _run_parse_batch(series, tests, args):
             coverage = output.write_problem_coverage(
                 series.coverage_exceptions(test.id), dest
             )
+            output.write_test_profile(series.proof_profile(test), dest)
             log(
                 f"[{series.name}] wrote {n} problem(s), {coverage} coverage exception(s) -> {dest}"
             )
@@ -393,6 +394,7 @@ def cmd_solutions(args):
     try:
         for test in tests:
             dest = out_root / test.id
+            proof_profile = series.proof_profile(test)
             sol = series.solution_source(test) if series.has_solutions else None
             pages_md = None
             if series.has_solutions and sol is None:
@@ -406,10 +408,17 @@ def cmd_solutions(args):
                 log(f"[{series.name}] skip {test.id} (no solution source found)")
             if sol is not None:
                 pages_md = _scrape_solutions(args, series, test, sol, dest, model)
-            if series.has_answers:
+            if series.has_answers and proof_profile is None:
                 _scrape_answers(
                     args, series, test, dest, model, out_root, data_dir, sol, pages_md
                 )
+            elif proof_profile is not None:
+                # A prior generic parse may have mistaken proof prose or a
+                # subpart marker for an answer.  The profile is authoritative,
+                # so remove that stale key even without --force.
+                output.write_solutions({}, dest, suffix="answer")
+                output.write_test_profile(proof_profile, dest)
+                log(f"[{series.name}] skip {test.id} answers (proof profile)")
     finally:
         _close_engine(args.engine, model)
 

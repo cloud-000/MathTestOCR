@@ -238,6 +238,7 @@ class PumacSeries(Series):
     name = "pumac"
     has_solutions = True
     has_answers = True
+    proof_test_patterns = (r"^\d{4}_[AB]_individual_finals$",)
 
     @override
     def test_pages(self, test, workdir):

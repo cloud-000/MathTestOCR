@@ -226,6 +226,7 @@ class HmmtSeries(Series):
     name = "hmmt"
     has_solutions = True
     has_answers = True
+    proof_test_patterns = (r"^\d{4}_hmic$",)
 
     @override
     def discover_tests(self, data_dir):

@@ -110,6 +110,7 @@ class ChmmSeries(Series):
     has_solutions = True
     has_answers = True
     ignored_test_substrings = ("math-talk", "tcs")
+    proof_test_patterns = (r"^\d{4}_(?:fall|winter|spring|annual)_proof$",)
 
     @override
     def discover_tests(self, data_dir):

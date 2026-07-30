@@ -104,6 +104,22 @@ class CoverageException:
     mock_eligibility: Literal["archive_only"] = "archive_only"
 
 
+@dataclass(frozen=True)
+class ProofProfile:
+    """Declared semantics for a test scored by written proof.
+
+    Proof tests still have useful statements, official solutions, and figures,
+    but no deterministic answer key.  Keeping this separate from
+    ``CoverageException`` avoids manufacturing one repetitive exception per
+    problem, and gives downstream importers an affirmative source-format fact
+    rather than an ambiguous absent-answer signal.
+    """
+
+    response_kind: Literal["proof"] = "proof"
+    answer_status: Literal["not_applicable"] = "not_applicable"
+    practice_mode: Literal["self_assessed"] = "self_assessed"
+
+
 def _natural_pages(folder: Path):
     """Page images in a folder, sorted so page_2 precedes page_10."""
     import re
@@ -124,6 +140,10 @@ class Series:
     has_solutions = False
     has_answers = False
     ignored_test_substrings: tuple[str, ...] = ()
+    # Stable test-id patterns for proof-only rounds.  Subclasses may list any
+    # number of regular expressions; they are deliberately opt-in rather than
+    # inferred from statement wording or a missing answer key.
+    proof_test_patterns: tuple[str, ...] = ()
 
     # --- Discovery -------------------------------------------------------
     def discover_tests(self, data_dir):
@@ -143,6 +163,18 @@ class Series:
         """
         test_id = test.id.casefold()
         return any(part.casefold() in test_id for part in self.ignored_test_substrings)
+
+    def proof_profile(self, test: Test) -> ProofProfile | None:
+        """Return a proof profile when ``test.id`` matches a declared regex.
+
+        ``proof_test_patterns`` uses ``re.search`` so a series can match either
+        a complete canonical id (recommended: anchor with ``^...$``) or one
+        stable path component.  Override this hook for a profile that depends
+        on source metadata rather than the id.
+        """
+        if any(re.search(pattern, test.id, re.IGNORECASE) for pattern in self.proof_test_patterns):
+            return ProofProfile()
+        return None
 
     def test_pages(self, test: Test, workdir):
         """Return page-image paths for `test` in reading order.

@@ -8,6 +8,7 @@ Layout inside `dest` (typically ``out/<series>/<test>/``):
                                      -- figure crops from the solution document
   problem_answer.json                 -- {problem number: answer-key entry}
   problem_coverage.json               -- verified non-standard coverage metadata
+  test_profile.json                    -- proof-test semantics, when applicable
 """
 
 import json
@@ -77,6 +78,19 @@ def write_problem_coverage(exceptions, dest):
     }
     _write_json(out / "problem_coverage.json", data)
     return len(data)
+
+
+def write_test_profile(profile, dest):
+    """Write (or clear) a test-level content profile for downstream importers."""
+    out = Path(dest)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "test_profile.json"
+    if profile is None:
+        if path.exists():
+            path.unlink()
+        return False
+    _write_json(path, asdict(profile) if is_dataclass(profile) else dict(profile))
+    return True
 
 
 def write_solutions(solutions, dest, suffix="solution"):

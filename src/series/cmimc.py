@@ -189,6 +189,7 @@ class CmimcSeries(Series):
     name = "cmimc"
     has_solutions = True
     has_answers = True
+    proof_test_patterns = (r"^\d+_team_computer-science$",)
 
     @override
     def coverage_exceptions(self, test_id: str) -> dict[int, CoverageException]:
