@@ -75,6 +75,7 @@ _PAGE_NUMBER_RE = re.compile(
     r"^\s*(?:<page_number\b[^>]*>\s*\d+\s*</page_number>|(?:page\s+)?\d+)\s*$",
     re.IGNORECASE,
 )
+_DO_NOT_MARK_RE = re.compile(r"^\s*(?:\[\s*)?do\s+not\s+mark(?:\s*\])?\s*$", re.IGNORECASE)
 _HEADER_ID_RE = re.compile(
     r"^(?:stanford\s+math\s+tournament\b.*|(?:SMT|ASMT)\s+20\d{2}\b.*)$",
     re.IGNORECASE,
@@ -253,12 +254,16 @@ class SmtSeries(Series):
     @override
     def clean_statement_markdown(self, page_index, markdown):
         """Keep one printable copy of each duplicated Treelay answer form."""
-        if not getattr(self, "_active_test_id", "").endswith("_treelay"):
-            return markdown
-        # Each page prints the same question twice.  The OCR reliably separates
-        # the copies with a horizontal rule, so discard the second before marker
-        # grouping can append it to the first problem.
-        return re.split(r"\n\s*(?:---|\*\*\*)\s*\n", markdown, maxsplit=1)[0]
+        if getattr(self, "_active_test_id", "").endswith("_treelay"):
+            # Each page prints the same question twice.  The OCR reliably
+            # separates the copies with a horizontal rule, so discard the
+            # second before marker grouping can append it to the first problem.
+            markdown = re.split(r"\n\s*(?:---|\*\*\*)\s*\n", markdown, maxsplit=1)[0]
+        return self.clean_reconstructed_statement(markdown)
+
+    @override
+    def clean_reconstructed_statement(self, markdown: str) -> str:
+        return self.clean_solution_markdown(0, markdown)
 
     @override
     def clean_solution_markdown(self, page_index, markdown):
@@ -278,7 +283,7 @@ class SmtSeries(Series):
             # content exactly as transcribed.
             plain = re.sub(r"[*_#]", "", line).strip()
             plain = re.sub(r"\s+", " ", plain)
-            if _PAGE_NUMBER_RE.match(line):
+            if _PAGE_NUMBER_RE.match(line) or _DO_NOT_MARK_RE.match(plain):
                 index += 1
                 continue
             if _SPLIT_STANFORD_HEADER_RE.match(plain):

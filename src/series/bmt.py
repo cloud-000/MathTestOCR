@@ -54,6 +54,18 @@ _RUNNING_TITLE_RE = re.compile(
     r")$",
     re.IGNORECASE,
 )
+_RUNNING_STATEMENT_FURNITURE_RE = re.compile(
+    r"^(?:"
+    r"(?:algebra|analysis|calculus|combinatorics|discrete|geometry|general|"
+    r"number\s+theory|pacer|speed|team|individual|guts|tournament)\s+"
+    r"(?:test|round|tiebreaker)(?:\s+(?:january|february|march|april|may|"
+    r"june|july|august|september|october|november|december)\s+\d{1,2}"
+    r"(?:\s*[–—-]\s*\d{1,2})?,?\s+20\d{2})?"
+    r"|do\s+not\s+discuss\s+or\s+distribute\s+online\s+until\b.*"
+    r"|page\s+\d+"
+    r")$",
+    re.IGNORECASE,
+)
 _TOURNAMENT_HEADING_RE = re.compile(
     r"^\s*(?:\d+\.\s*)?(?:\*{1,2}\s*)?"
     r"(?:ROUND\b|CHAMPIONSHIP\s+ROUND|CONSOLATION\s+ROUND)\b",
@@ -307,6 +319,17 @@ class BmtSeries(Series):
             markdown, line_patterns=(_RUNNING_HEADER_RE, _RUNNING_TITLE_RE)
         )
 
+    @staticmethod
+    def _strip_statement_furniture(markdown: str) -> str:
+        return strip_solution_page_furniture(
+            markdown,
+            line_patterns=(
+                _RUNNING_HEADER_RE,
+                _RUNNING_TITLE_RE,
+                _RUNNING_STATEMENT_FURNITURE_RE,
+            ),
+        )
+
     @override
     def clean_statement_markdown(self, page_index: int, markdown: str) -> str:
         # This PDF appends a separate tiebreaker after the 20-question
@@ -314,7 +337,11 @@ class BmtSeries(Series):
         # belongs to the selected packet (otherwise it is swallowed by #20).
         if getattr(self, "_active_test_id", "") == "bmmt_2017_individual":
             markdown = markdown.split("TIEBREAKER", 1)[0]
-        return self._strip_running_furniture(self._renumber_page(page_index, markdown))
+        return self._strip_statement_furniture(self._renumber_page(page_index, markdown))
+
+    @override
+    def clean_reconstructed_statement(self, markdown: str) -> str:
+        return self._strip_statement_furniture(markdown)
 
     @override
     def clean_solution_markdown(self, page_index: int, markdown: str) -> str:

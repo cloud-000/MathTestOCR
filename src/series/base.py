@@ -162,6 +162,15 @@ class Series:
         """
         return markdown
 
+    def clean_reconstructed_statement(self, markdown: str) -> str:
+        """Clean known page furniture from an already-merged statement.
+
+        This hook exists for one-off repairs of historical ``problems.json``
+        output. Normal parsing uses :meth:`clean_statement_markdown`, where
+        the page index is available; the default deliberately makes no change.
+        """
+        return markdown
+
     def validate_statement_markdown(self, page_index: int, markdown: str) -> bool:
         """Return whether a statement page OCR is complete enough to cache/use.
 
