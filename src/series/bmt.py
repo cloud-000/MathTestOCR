@@ -73,14 +73,27 @@ _TOURNAMENT_HEADING_RE = re.compile(
 )
 _TIEBREAKER_RE = re.compile(r"\bTIEBREAKER\b", re.IGNORECASE)
 
+# This packet wraps part of problem 26's statement onto a line beginning
+# ``are 6.``, which looks like a bare problem marker to the generic matcher.
+# Opt in only after confirming a packet is flat-numbered: several older BMT
+# packets deliberately reuse small numbers for cases and alternate work.
+_STRICTLY_INCREASING_SOLUTION_MARKER_TESTS = {"bmt_2022_guts"}
 
-def _solution_blocks(full_text: str, match_marker) -> dict[int, list[str]]:
+
+def _solution_blocks(
+    full_text: str, match_marker, *, strictly_increasing: bool = False
+) -> dict[int, list[str]]:
     """Split BMT solution packets without promoting numbered working to problems.
 
     Modern packets label every real block with ``Answer`` or ``Solution``.  A
     numbered list inside a worked solution does not, so a candidate marker is
     accepted only when its following block contains one of those labels.  The
     older unlabeled packets retain the historical, marker-only behavior.
+
+    Opted-in flat-numbered packets may additionally require retained markers
+    to be strictly increasing.  This prevents a wrapped statement or proof
+    line such as ``are 6. If ...`` from becoming a provisional boundary before
+    the ``Answer:`` line for problem 26.
     """
     lines = [line.strip() for line in full_text.splitlines()]
     candidates = []
@@ -89,6 +102,15 @@ def _solution_blocks(full_text: str, match_marker) -> dict[int, list[str]]:
         marker = match_marker(probe)
         if marker is not None:
             candidates.append((index, marker[0], marker[1], probe))
+    if strictly_increasing:
+        retained = []
+        last_number = None
+        for candidate in candidates:
+            if last_number is not None and candidate[1] <= last_number:
+                continue
+            retained.append(candidate)
+            last_number = candidate[1]
+        candidates = retained
     labelled = any(_ANSWER_RE.match(line) or _SOLUTION_RE.match(line) for line in lines)
     accepted = []
     for pos, (index, number, end, probe) in enumerate(candidates):
@@ -374,7 +396,12 @@ class BmtSeries(Series):
 
         Figure placeholders are retained so DETR crops stay inline.
         """
-        grouped = _solution_blocks(full_text, self.match_marker())
+        grouped = _solution_blocks(
+            full_text,
+            self.match_marker(),
+            strictly_increasing=getattr(self, "_active_test_id", "")
+            in _STRICTLY_INCREASING_SOLUTION_MARKER_TESTS,
+        )
         return {n: _solution_body("\n".join(parts)) for n, parts in grouped.items()}
 
     @override
@@ -431,10 +458,29 @@ class BmtSeries(Series):
 
         # 2. Problem blocks.  Do not let a numbered proof step create an answer
         # key entry (notably BMT 2019 Discrete and the individual tiebreaker).
-        for number, parts in _solution_blocks(full_text, self.match_marker()).items():
-            answer = _answer_value("\n".join(parts))
-            if answer and answer.upper() != "N/A":
-                answers[number] = answer
+        blocks = _solution_blocks(
+            full_text,
+            self.match_marker(),
+            strictly_increasing=getattr(self, "_active_test_id", "")
+            in _STRICTLY_INCREASING_SOLUTION_MARKER_TESTS,
+        )
+        for number, parts in blocks.items():
+            block = "\n".join(parts)
+            answer = _answer_value(block)
+            if answer:
+                # Guts free-response/fun questions print ``Answer: N/A``. Do
+                # not ask the prose extractor to invent a key for them.
+                if answer.upper() != "N/A":
+                    answers[number] = answer
+                continue
+
+            # Older BMT packets often work through a solution and state its
+            # result only in prose, without an Answer label or a boxed final
+            # value. Let the local text model extract only these unresolved
+            # blocks; failures are intentionally soft and leave the key partial.
+            answer = answer_llm.extract(block)
+            if answer:
+                answers[number] = _clean_answer(answer)
 
         # The 2012 tournament solution packet predates explicit Answer lines.
         # Its source PDF has a complete statement layer, so the optional text
@@ -443,7 +489,7 @@ class BmtSeries(Series):
         # supplement, never a replacement for them.
         if test.id == "bmt_2012_tournament":
             statements = _tournament_statement_blocks(test)
-            for number, parts in _solution_blocks(full_text, self.match_marker()).items():
+            for number, parts in blocks.items():
                 if number in answers:
                     continue
                 solution = "\n".join(parts).strip()
