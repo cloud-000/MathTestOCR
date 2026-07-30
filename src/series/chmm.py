@@ -133,6 +133,10 @@ class ChmmSeries(Series):
             inline_figures=True,
             strict_section_restarts=True,
             flat_problem_numbering=True,
+            # Some solution pages place a bare ``N.`` immediately after the
+            # preceding problem's closing display equation.  Split that safe,
+            # otherwise line-invisible boundary before grouping solutions.
+            split_glued_bare_markers=True,
             max_picture_area_frac=0.2,
             header_picture_frac=0.1,
             # Integration Bee slides contain a long, 16-pixel-high answer
@@ -242,7 +246,10 @@ class ChmmSeries(Series):
         if not full_text.strip():
             return {}
         full_text = _preserve_solution_boundaries(full_text)
-        grouped = _group_blocks(full_text)
+        grouped = _group_blocks(
+            full_text,
+            split_glued_bare_markers=self.layout_options().split_glued_bare_markers,
+        )
         # A few early files are short answer keys, not worked solutions.  They
         # belong in problem_answer.json only.
         if _is_answer_key(full_text):
@@ -282,7 +289,10 @@ class ChmmSeries(Series):
         full_text = _filter_round_text("\n\n".join(cleaned_pages), test.id)
         if not full_text.strip():
             return {}
-        grouped = _group_blocks(full_text)
+        grouped = _group_blocks(
+            full_text,
+            split_glued_bare_markers=self.layout_options().split_glued_bare_markers,
+        )
         answer_key = _is_answer_key(full_text)
         answers = {}
         for number, block in grouped.items():
@@ -342,13 +352,16 @@ def _filter_round_text(full_text: str, test_id: str) -> str:
     return "\n\n".join(matching_text) if matching_text else ""
 
 
-def _group_blocks(full_text: str) -> dict[int, str]:
+def _group_blocks(
+    full_text: str, *, split_glued_bare_markers: bool = False
+) -> dict[int, str]:
     grouped: dict[int, list[str]] = {}
     for item in parse_layout(
         full_text,
         _match_marker,
         strict_section_restarts=True,
         flat_problem_numbering=True,
+        split_glued_bare_markers=split_glued_bare_markers,
     ):
         if item["problem"] is None:
             continue
