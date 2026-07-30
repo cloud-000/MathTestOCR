@@ -292,7 +292,12 @@ def _run_parse_batch(series, tests, args):
             # append at the end -- both handled by _place_figure_refs.
             inline_problem_figures(problems, f"{series.name}/{test.id}/")
             n = output.write_problems(problems, dest)
-            log(f"[{series.name}] wrote {n} problem(s) -> {dest}")
+            coverage = output.write_problem_coverage(
+                series.coverage_exceptions(test.id), dest
+            )
+            log(
+                f"[{series.name}] wrote {n} problem(s), {coverage} coverage exception(s) -> {dest}"
+            )
     finally:
         _close_engine(args.engine, model)
 

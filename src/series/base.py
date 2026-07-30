@@ -9,6 +9,7 @@ pipeline; a series only describes *what* to parse and *how its numbering works*.
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .. import config, pdf_io
 
@@ -85,6 +86,22 @@ class Test:
 
     id: str
     source: Path
+
+
+@dataclass(frozen=True)
+class CoverageException:
+    """A verified, non-standard coverage expectation for one problem.
+
+    This is deliberately opt-in: a missing answer or solution is *not* an
+    exception merely because extraction failed.  Series use this only when the
+    source itself establishes that the problem is unanswerable or deliberately
+    omitted from the available key/solutions packet.
+    """
+
+    answer_status: Literal["source_missing", "not_applicable"]
+    solution_status: Literal["source_missing", "not_applicable"]
+    reason: str
+    mock_eligibility: Literal["archive_only"] = "archive_only"
 
 
 def _natural_pages(folder: Path):
@@ -202,6 +219,17 @@ class Series:
     def postprocess(self, problems):
         """Hook to clean up the merged problem list. Default: unchanged."""
         return problems
+
+    def coverage_exceptions(self, test_id: str) -> dict[int, CoverageException]:
+        """Return verified per-problem answer/solution coverage exceptions.
+
+        The returned numbers remain in ``problems.json``.  Their metadata is
+        written to ``problem_coverage.json`` and lets audits distinguish an
+        intentional source-format omission from a missing-key defect.  The
+        default is intentionally empty; never infer an exception merely from a
+        missing answer or solution.
+        """
+        return {}
 
     def duplicate_scope(self, test_id: str, across: bool = False):
         """Return a comparison-scope key for `dedup`, or None to opt out.

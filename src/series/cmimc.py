@@ -42,7 +42,7 @@ from typing_extensions import override
 
 from .. import anchors, answer_llm, config
 from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
-from .base import Series, Test
+from .base import CoverageException, Series, Test
 from .smt import _boxed_answer
 
 
@@ -189,6 +189,34 @@ class CmimcSeries(Series):
     name = "cmimc"
     has_solutions = True
     has_answers = True
+
+    @override
+    def coverage_exceptions(self, test_id: str) -> dict[int, CoverageException]:
+        """Record source-verified non-standard questions without dropping them.
+
+        The 2017 packet appends a three-question tiebreaker after the ten
+        Number Theory round problems; its official solutions packet covers the
+        main round only.  The 2020 Team packet's last item is an interactive
+        estimation activity, so it has no canonical answer at all.
+        """
+        if test_id == "2017_individual_number-theory":
+            return {
+                number: CoverageException(
+                    answer_status="source_missing",
+                    solution_status="source_missing",
+                    reason="Number Theory tiebreaker omitted from the official packet",
+                )
+                for number in (11, 12, 13)
+            }
+        if test_id == "2020_team_team":
+            return {
+                16: CoverageException(
+                    answer_status="not_applicable",
+                    solution_status="not_applicable",
+                    reason="Interactive estimation activity has no canonical answer",
+                )
+            }
+        return {}
 
     @override
     def discover_tests(self, data_dir):

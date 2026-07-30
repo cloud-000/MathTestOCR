@@ -7,9 +7,11 @@ Layout inside `dest` (typically ``out/<series>/<test>/``):
   problem_<n>_solution_<k>_image_<j>.png
                                      -- figure crops from the solution document
   problem_answer.json                 -- {problem number: answer-key entry}
+  problem_coverage.json               -- verified non-standard coverage metadata
 """
 
 import json
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
 
@@ -58,6 +60,23 @@ def write_problems(problems, dest):
                 el.crop.save(out / f"problem_{p.number}_image_{k}.png")
     _write_json(out / "problems.json", data)
     return len(problems)
+
+
+def write_problem_coverage(exceptions, dest):
+    """Write a per-problem coverage sidecar for downstream consumers.
+
+    ``exceptions`` is normally the result of ``Series.coverage_exceptions``.
+    Always writing the file (including an empty object) makes a parsed test's
+    coverage contract explicit to importers such as Problem Cloud.
+    """
+    out = Path(dest)
+    out.mkdir(parents=True, exist_ok=True)
+    data = {
+        str(number): asdict(value) if is_dataclass(value) else dict(value)
+        for number, value in sorted(exceptions.items())
+    }
+    _write_json(out / "problem_coverage.json", data)
+    return len(data)
 
 
 def write_solutions(solutions, dest, suffix="solution"):
