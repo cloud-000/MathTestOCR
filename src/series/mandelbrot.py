@@ -55,14 +55,24 @@ _BACK_COVER_RE = re.compile(
     r"(?im)^[^\S\n]*(?:©|\(c\)|copyright)?[^\S\n]*proof school\b"
 )
 
+# Older sheets end their final solution with the publisher's copyright and put
+# its postal/contact block below it.  The year distinguishes this boundary from
+# the repeated "Greater Testing Concepts" contact label at the page foot.
+_LEGACY_FOOTER_RE = re.compile(
+    r"(?im)^[^\S\n]*(?:[^A-Za-z0-9\s]|\(c\)|copyright)?[^\S\n]*"
+    r"greater\s+testing\s+concepts\s+\d{4}\b"
+)
+
 # The PDF text-layer form of that same copyright line, for fencing figures (see
 # solution_figure_floor). In the born-digital text the © glyph decodes as a
 # leading combining ring, so the line -- "<ring>Proof School 2018" -- is not
 # anchored the way `_BACK_COVER_RE` expects; match "Proof School" adjacent to a
 # four-digit year instead, which the copyright line carries but the lone
 # "Proof School" footer line does not, so this lands on the true content boundary.
-_PDF_COPYRIGHT_RE = re.compile(
-    r"proof school\s*\d{4}|\d{4}\s*proof school", re.IGNORECASE
+_PDF_SOLUTION_TAIL_RE = re.compile(
+    r"proof school\s*\d{4}|\d{4}\s*proof school|"
+    r"greater\s+testing\s+concepts\s*\d{4}",
+    re.IGNORECASE,
 )
 _RUNNING_SOLUTION_FURNITURE_RE = re.compile(
     r"^(?:"
@@ -82,9 +92,10 @@ _RUNNING_SOLUTION_FURNITURE_RE = re.compile(
 _ROUND_SOLUTIONS_RE = re.compile(r"\bround\s+(?:one|two|three|four|five|\d+)\s+solutions?\b", re.IGNORECASE)
 
 
-def _strip_back_cover(text: str) -> str:
-    """Drop the trailing back-cover boilerplate from a solution page's markdown."""
-    m = _BACK_COVER_RE.search(text)
+def _strip_solution_tail(text: str) -> str:
+    """Drop the trailing credits/contact block from a solution page's markdown."""
+    matches = (pattern.search(text) for pattern in (_BACK_COVER_RE, _LEGACY_FOOTER_RE))
+    m = min((match for match in matches if match), key=lambda match: match.start(), default=None)
     return text[: m.start()].rstrip() if m else text
 
 
@@ -285,7 +296,7 @@ class MandelbrotSeries(Series):
         document's end (`_strip_back_cover`) is dropped for the same reason: its
         credits/boilerplate would otherwise trail into the last solution.
         """
-        text = _strip_back_cover(_split_answer_key(markdown)[1])
+        text = _strip_solution_tail(_split_answer_key(markdown)[1])
         return strip_solution_page_furniture(
             text, line_patterns=(_RUNNING_SOLUTION_FURNITURE_RE,)
         )
@@ -308,7 +319,7 @@ class MandelbrotSeries(Series):
             line["bbox"][1]
             for block in pdf_page.get_text("dict")["blocks"]
             for line in block.get("lines", [])
-            if _PDF_COPYRIGHT_RE.search("".join(s["text"] for s in line["spans"]))
+            if _PDF_SOLUTION_TAIL_RE.search("".join(s["text"] for s in line["spans"]))
         ]
         if not ys or not pdf_page.rect.height:
             return None
