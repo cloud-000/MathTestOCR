@@ -67,8 +67,8 @@ def write_problem_coverage(exceptions, dest):
     """Write a per-problem coverage sidecar for downstream consumers.
 
     ``exceptions`` is normally the result of ``Series.coverage_exceptions``.
-    Always writing the file (including an empty object) makes a parsed test's
-    coverage contract explicit to importers such as Problem Cloud.
+    The sidecar is omitted when there are no exceptions.  An empty sidecar from
+    a previous parse is removed so reruns leave the output tree consistent.
     """
     out = Path(dest)
     out.mkdir(parents=True, exist_ok=True)
@@ -76,7 +76,11 @@ def write_problem_coverage(exceptions, dest):
         str(number): asdict(value) if is_dataclass(value) else dict(value)
         for number, value in sorted(exceptions.items())
     }
-    _write_json(out / "problem_coverage.json", data)
+    path = out / "problem_coverage.json"
+    if data:
+        _write_json(path, data)
+    elif path.exists():
+        path.unlink()
     return len(data)
 
 
