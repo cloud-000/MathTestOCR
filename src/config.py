@@ -419,6 +419,12 @@ class LayoutOptions:
     # genuine ordered list inside a problem unless its items also begin with a
     # point value.
     point_value_list_markers: bool = False
+    # Once a page has established that its ordinary problem markers carry a
+    # bracketed point value (``N. [5] ...``), reject later bare numeric starts.
+    # This protects a numbered procedure inside a problem from becoming a new
+    # problem. Off by default because many series mix numbered problems with
+    # unscored markers; HMMT opts in for its point-valued rounds.
+    point_value_marker_consistency: bool = False
     # Treat a top-level ("# ") markdown heading as the next sequential problem
     # start. Proof rounds sometimes title their problems ("# Balance the Board")
     # and print no number at all, so a page carrying one whole problem has no

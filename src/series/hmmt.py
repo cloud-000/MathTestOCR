@@ -23,7 +23,7 @@ from typing_extensions import override
 
 from .. import anchors, answer_llm, config
 from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
-from .base import Series, Test, strip_solution_page_furniture
+from .base import CoverageException, Series, Test, strip_solution_page_furniture
 
 
 _ANSWER_RE = re.compile(
@@ -175,12 +175,54 @@ _HMMT_GLUED_POINT_MARKER_RE = re.compile(
     r"(?P<close>\$)(?P<punct>[.:])?(?P<space>[ \t]+)"
     r"(?P<marker>\d{1,3}\s*[.)])(?=\s*\[\s*(?:±\s*)?\d+\s*\])"
 )
+# The 2008 November Theme Round writes its section titles as ordinary text,
+# unlike later packets' markdown headings. A title with a bracketed section
+# total is unambiguous and lets strict numbering accept the following restart.
+_HMMT_POINT_SECTION_TITLE_RE = re.compile(
+    r"(?m)^(?P<title>\s*[A-Z][^\n]{0,100}?\s+\[\d+\])\s*$"
+)
 # Solution-page completeness floor (see validate_solution_markdown). Pages whose
 # text layer is thinner than this are answer grids and colour keys, whose sparse
 # transcription is correct; the fraction sits in the gap between every abandoned
 # page in this series (<= 0.2) and the thinnest healthy one (0.63).
 _MIN_VALIDATED_PAGE_TEXT = 800
 _MIN_PAGE_TEXT_FRACTION = 0.35
+
+# These are source-reviewed written-response problems in otherwise mixed HMMT
+# packets. Their solution PDFs provide a proof but no canonical short answer;
+# they must not be sent through the answer LLM, which otherwise writes the
+# fabricated string "no solution" into the answer key.
+_PROOF_ANSWER_EXCEPTIONS = {
+    "1999_feb_oral": (5,),
+    "2000_feb_oral": (3, 4, 5, 9),
+    "2002_feb_team": (3, 5, 9, 12),
+    "2003_feb_team": (6, 7),
+    "2004_feb_team": (1, 4, 5, 6, 7, 9, 13, 14, 16),
+    "2005_feb_team1": (1, 3, 7, 11, 12, 13, 15),
+    "2005_feb_team2": (3, 5, 9, 10),
+    "2006_feb_team1": (7, 9, 13),
+    "2006_feb_team2": (1,),
+    "2007_feb_team1": (3, 4),
+    "2007_feb_team2": (11, 15, 16),
+    "2008_feb_team1": (5, 7, 11, 13),
+    "2008_feb_team2": (1, 2, 3, 5, 6, 11, 12, 13),
+    "2008_nov_team": (4, 7, 9, 10, 11),
+    "2009_feb_team1": (4, 7),
+    "2009_feb_team2": (5, 6),
+    "2010_feb_team1": (6,),
+    "2011_feb_team1": (5, 11),
+    "2011_feb_team2": (5, 7, 10, 11, 12, 13),
+    "2012_feb_team1": (2, 3, 5),
+    "2012_feb_team2": (8, 10),
+    "2013_feb_team": (7,),
+    "2015_feb_team": (3,),
+    "2016_feb_team": (1,),
+    "2017_feb_team": (2, 3),
+    "2018_feb_team": (1, 5, 6, 9),
+    "2020_feb_team": (2, 8),
+    "2022_feb_team": (6,),
+    "2023_feb_team": (2, 6),
+}
 
 
 def _match_marker(text):
@@ -205,7 +247,9 @@ def _match_marker(text):
     return match[0], offset + match[1]
 
 
-def _clean_hmmt_markdown(markdown: str, *, strip_lists: bool = False) -> str:
+def _clean_hmmt_markdown(
+    markdown: str, *, strip_lists: bool = False, promote_point_sections: bool = False
+) -> str:
     """Remove HMMT page furniture and OCR wrapper markup without touching math."""
     def split_glued_marker(match: re.Match) -> str:
         return f"{match.group('close')}{match.group('punct') or ''}\n{match.group('marker')}"
@@ -221,6 +265,10 @@ def _clean_hmmt_markdown(markdown: str, *, strip_lists: bool = False) -> str:
     text = _TIME_LIMIT_RE.sub("", text)
     text = _FORM_LINE_RE.sub("", text)
     text = _FORM_TAIL_RE.sub("", text)
+    if promote_point_sections:
+        text = _HMMT_POINT_SECTION_TITLE_RE.sub(
+            lambda match: f"## {match.group('title').strip()}", text
+        )
     text = strip_solution_page_furniture(
         text, line_patterns=(_HMMT_ROUND_TITLE_RE,)
     )
@@ -252,6 +300,7 @@ def _marker_count(text: str) -> int:
             text,
             _match_marker,
             point_value_list_markers=True,
+            point_value_marker_consistency=True,
             strict_section_restarts=True,
             page_initial_point_restart=True,
             split_glued_bare_markers=True,
@@ -274,6 +323,39 @@ class HmmtSeries(Series):
     has_solutions = True
     has_answers = True
     proof_test_patterns = (r"^\d{4}_hmic$",)
+
+    @override
+    def coverage_exceptions(self, test_id: str) -> dict[int, CoverageException]:
+        """Declare source-verified non-numeric and omitted-source coverage.
+
+        HMMT team and oral packets mix short-answer and proof questions, so a
+        test-wide proof profile would incorrectly suppress answers for ordinary
+        questions. Keep this deliberately explicit at problem granularity.
+        """
+        exceptions = {
+            number: CoverageException(
+                answer_status="not_applicable",
+                reason="Written-response proof has no canonical short answer in the official packet",
+            )
+            for number in _PROOF_ANSWER_EXCEPTIONS.get(test_id, ())
+        }
+        if test_id == "2000_feb_guts":
+            exceptions.update(
+                {
+                    number: CoverageException(
+                        answer_status="source_missing",
+                        solution_status="source_missing",
+                        reason="Official Guts key leaves this diagram-response answer blank",
+                    )
+                    for number in (32, 34, 37, 47)
+                }
+            )
+        if test_id == "2008_nov_guts":
+            exceptions[34] = CoverageException(
+                solution_status="source_missing",
+                reason="Official Guts packet provides only the estimation answer, not a worked solution",
+            )
+        return exceptions
 
     @override
     def discover_tests(self, data_dir):
@@ -347,6 +429,7 @@ class HmmtSeries(Series):
         return config.LayoutOptions(
             inline_figures=True,
             point_value_list_markers=True,
+            point_value_marker_consistency=True,
             strict_section_restarts=True,
             page_initial_point_restart=True,
             split_glued_bare_markers=True,
@@ -393,14 +476,16 @@ class HmmtSeries(Series):
 
     @override
     def clean_statement_markdown(self, page_index: int, markdown: str) -> str:
-        return _clean_hmmt_markdown(markdown)
+        return _clean_hmmt_markdown(markdown, promote_point_sections=True)
 
     @override
     def validate_statement_markdown(self, page_index: int, markdown: str) -> bool:
         expected = getattr(self, "_expected_statement_starts", ())
         if page_index >= len(expected) or expected[page_index] == 0:
             return True
-        return _marker_count(_clean_hmmt_markdown(markdown)) >= expected[page_index]
+        return _marker_count(
+            _clean_hmmt_markdown(markdown, promote_point_sections=True)
+        ) >= expected[page_index]
 
     @override
     def clean_solution_markdown(self, page_index: int, markdown: str) -> str:
@@ -477,6 +562,7 @@ class HmmtSeries(Series):
             full_text,
             self.match_marker(),
             point_value_list_markers=True,
+            point_value_marker_consistency=True,
             strict_section_restarts=True,
             page_initial_point_restart=True,
             split_glued_bare_markers=True,
@@ -504,9 +590,16 @@ class HmmtSeries(Series):
         nothing are omitted -- a partial key, never a guessed one.
         """
         answers = {}
+        non_numeric = {
+            number
+            for number, exception in self.coverage_exceptions(test.id).items()
+            if exception.answer_status == "not_applicable"
+        }
         full_text = _clean_hmmt_markdown("\n\n".join(pages_markdown))
         blocks = _group_blocks(full_text, self.match_marker())
         for number, block in blocks.items():
+            if number in non_numeric:
+                continue
             answer = _answer_value(block) or _bare_answer(block) or answer_llm.extract(block)
             if answer and answer.upper() != "N/A":
                 answers[number] = answer
@@ -534,6 +627,7 @@ def _group_blocks(full_text: str, match) -> dict:
         full_text,
         match,
         point_value_list_markers=True,
+        point_value_marker_consistency=True,
         strict_section_restarts=True,
         page_initial_point_restart=True,
         split_glued_bare_markers=True,

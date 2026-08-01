@@ -505,6 +505,7 @@ def parse_layout(
     start_problem=None,
     ordered_list_markers=False,
     point_value_list_markers=False,
+    point_value_marker_consistency=False,
     heading_problem_markers=False,
     strict_section_restarts=False,
     consecutive_problem_markers=False,
@@ -570,6 +571,7 @@ def parse_layout(
     offset = 0  # cumulative problem offset across section restarts
     saw_heading = False
     page_marker_seen = False
+    saw_point_value_marker = False
 
     _HEADING_RE = re.compile(
         r"^\s*(?:#+|\*{1,2})\s*(?:[A-Z0-9].*?)(?:\*{1,2})?\s*$", re.IGNORECASE
@@ -588,7 +590,17 @@ def parse_layout(
 
         Flushes `buf` under the previous problem before updating state.
         Returns True if accepted (updating state), False if rejected."""
-        nonlocal current, last_raw, max_raw, offset, saw_heading, page_marker_seen
+        nonlocal current, last_raw, max_raw, offset, saw_heading, page_marker_seen, saw_point_value_marker
+        # A point-valued problem sequence is a stronger, series-declared signal
+        # than an otherwise marker-shaped number in its prose. Do not impose
+        # the rule until a point-valued marker has actually been accepted, so
+        # unscored packets and a page's first ordinary marker retain layout.
+        if (
+            point_value_marker_consistency
+            and saw_point_value_marker
+            and not has_point_value
+        ):
+            return False
         first_page_marker = not page_marker_seen
         page_marker_seen = True
         is_restart = False
@@ -620,6 +632,7 @@ def parse_layout(
             max_raw = raw_num
             current = raw_num + offset
             saw_heading = False
+            saw_point_value_marker = saw_point_value_marker or has_point_value
             return True
         elif last_raw is None or raw_num > last_raw:
             if (
@@ -633,6 +646,7 @@ def parse_layout(
             max_raw = max(max_raw, raw_num)
             current = raw_num + offset
             saw_heading = False
+            saw_point_value_marker = saw_point_value_marker or has_point_value
             return True
         return False
 

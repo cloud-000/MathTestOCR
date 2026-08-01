@@ -98,9 +98,12 @@ class CoverageException:
     omitted from the available key/solutions packet.
     """
 
-    answer_status: Literal["source_missing", "not_applicable"]
-    solution_status: Literal["source_missing", "not_applicable"]
     reason: str
+    # ``None`` means this side has normal coverage. Exceptions are sparse: a
+    # Guts estimation item can have a known answer but no worked solution, so
+    # declaring its answer ``not_applicable`` would be false metadata.
+    answer_status: Literal["source_missing", "not_applicable"] | None = None
+    solution_status: Literal["source_missing", "not_applicable"] | None = None
     mock_eligibility: Literal["archive_only"] = "archive_only"
 
 
