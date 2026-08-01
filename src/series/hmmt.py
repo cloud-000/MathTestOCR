@@ -38,6 +38,24 @@ _SOLUTION_RE = re.compile(
     r"(?:\*{1,2}|_+)?\s*(.*)$",
     re.IGNORECASE,
 )
+# The 2003-2005 documents print the final answer on the solution's own label
+# line ("**Solution:** 15") and write no "Answer:" line at all. A real colon is
+# required: "**Solution.** For $n = 12$," opens a proof, and its tail would
+# otherwise read as a value.
+_SOLUTION_ANSWER_RE = re.compile(
+    r"^\s*(?:\*{1,2}|_+)?\s*Solution(?:\s+\d+)?\s*(?:\*{1,2}|_+)?\s*:\s*"
+    r"(?:\*{1,2}|_+)?\s*(.*)$",
+    re.IGNORECASE,
+)
+# The General rounds reuse subject-test problems and print a pointer instead of
+# a worked solution ("Same as Geometry Test problem 2."). The capital letter
+# separates it from ordinary prose ("same as the probability that ...").
+_CROSS_REFERENCE_RE = re.compile(r"\bSame as [A-Z][A-Za-z ]*?(?:[Pp]roblem|#)\s*\d+")
+# A box holding nothing but an ellipsis is one the OCR emptied: a long printed
+# value (2010 February Combinatorics problem 8's 64-digit answer) collapsed into
+# "...". Unlike a symbol answer such as \pi it names no value, so the block is
+# left to the later tiers, which can still read the digits out of the prose.
+_DEGENERATE_BOX_RE = re.compile(r"^(?:\\(?:[cdlv]dots|dots)|\.{2,}|…)$")
 # Older rounds print a round-lettered marker instead of a bare integer:
 # "Problem A1" (Algebra), "C8" (Calculus), "G3" (Geometry), "T4"/"AT10" (Team,
 # Advanced Topics), plus "Gu1" (Guts) and "O1" (Oral). Any 1-3 letter prefix
@@ -72,15 +90,19 @@ _POWER_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 _FENCE_RE = re.compile(r"^\s*```(?:html)?\s*$", re.IGNORECASE | re.MULTILINE)
+# A tag's attributes may not span a line break. Without that guard the "<p" in
+# math such as "$x < p/2$" opens a fake <p> tag whose "[^>]*" then runs to the
+# next ">" anywhere below -- deleting every line in between. The same holds for
+# "<b" and "<em" in "$a < b$" / "$n < em$".
 _BLOCK_TAG_RE = re.compile(
-    r"</?(?:html|body|head|main|section|article|p|div)\b[^>]*>",
+    r"</?(?:html|body|head|main|section|article|p|div)\b[^>\n]*>",
     re.IGNORECASE,
 )
 _INLINE_TAG_RE = re.compile(
-    r"</?(?:strong|b|em|span|center|font)\b[^>]*>",
+    r"</?(?:strong|b|em|span|center|font)\b[^>\n]*>",
     re.IGNORECASE,
 )
-_LIST_TAG_RE = re.compile(r"</?(?:ol|ul|li)\b[^>]*>", re.IGNORECASE)
+_LIST_TAG_RE = re.compile(r"</?(?:ol|ul|li)\b[^>\n]*>", re.IGNORECASE)
 _BANNER_RE = re.compile(
     r"(?:\*{0,2}|#{1,6}\s*)?"
     r"(?:\d+(?:st|nd|rd|th|\^\{?th\}?|<sup>th</sup>)?\s+(?:annual\s+)?)?"
@@ -140,6 +162,25 @@ _BLANK_LINES_RE = re.compile(r"\n{3,}")
 _SUBPART_RE = re.compile(r"^\s*(?:\*{1,2})?\([a-z]\)\s+", re.IGNORECASE)
 _WORD_RE = re.compile(r"[A-Za-z0-9]+")
 _IMAGE_REF_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+# HMMT Guts pages regularly put the next point-valued problem marker directly
+# after the preceding answer's closing math delimiter.  This is deliberately
+# series-local: a bare number after inline math is often a proof step in other
+# competitions.  The display form may start any normal HMMT problem; the
+# inline form is restricted to the distinctive ``N. [points]`` shape.
+_HMMT_GLUED_DISPLAY_MARKER_RE = re.compile(
+    r"(?P<close>\$\$|\\\\\])(?P<punct>[.:])?(?P<space>[ \t]+)"
+    r"(?P<marker>\d{1,3}\s*[.)])(?=\s*(?:\[\s*(?:±\s*)?\d+\s*\]|[A-Z$\\\\]))"
+)
+_HMMT_GLUED_POINT_MARKER_RE = re.compile(
+    r"(?P<close>\$)(?P<punct>[.:])?(?P<space>[ \t]+)"
+    r"(?P<marker>\d{1,3}\s*[.)])(?=\s*\[\s*(?:±\s*)?\d+\s*\])"
+)
+# Solution-page completeness floor (see validate_solution_markdown). Pages whose
+# text layer is thinner than this are answer grids and colour keys, whose sparse
+# transcription is correct; the fraction sits in the gap between every abandoned
+# page in this series (<= 0.2) and the thinnest healthy one (0.63).
+_MIN_VALIDATED_PAGE_TEXT = 800
+_MIN_PAGE_TEXT_FRACTION = 0.35
 
 
 def _match_marker(text):
@@ -166,7 +207,12 @@ def _match_marker(text):
 
 def _clean_hmmt_markdown(markdown: str, *, strip_lists: bool = False) -> str:
     """Remove HMMT page furniture and OCR wrapper markup without touching math."""
+    def split_glued_marker(match: re.Match) -> str:
+        return f"{match.group('close')}{match.group('punct') or ''}\n{match.group('marker')}"
+
     text = _FENCE_RE.sub("", markdown)
+    text = _HMMT_GLUED_DISPLAY_MARKER_RE.sub(split_glued_marker, text)
+    text = _HMMT_GLUED_POINT_MARKER_RE.sub(split_glued_marker, text)
     text = _BLOCK_TAG_RE.sub("\n", text)
     text = _INLINE_TAG_RE.sub("", text)
     text = _COPYRIGHT_LINE_RE.sub("", text)
@@ -208,6 +254,7 @@ def _marker_count(text: str) -> int:
             point_value_list_markers=True,
             strict_section_restarts=True,
             page_initial_point_restart=True,
+            split_glued_bare_markers=True,
         )
         if item["problem"] is not None
     }
@@ -261,6 +308,7 @@ class HmmtSeries(Series):
         pages = super().test_pages(test, workdir)
         unique = []
         expected_starts = []
+        expected_text_len = []
         seen = set()
         source_text = {}
         source = Path(test.source)
@@ -280,12 +328,13 @@ class HmmtSeries(Series):
             unique.append(page)
             match = re.search(r"(\d+)$", Path(page).stem)
             pdf_page = int(match.group(1)) if match is not None else None
+            page_text = source_text.get(pdf_page, "") if pdf_page is not None else ""
             expected_starts.append(
-                _source_marker_count(source_text.get(pdf_page, ""))
-                if pdf_page is not None
-                else 0
+                _source_marker_count(page_text) if pdf_page is not None else 0
             )
+            expected_text_len.append(len(page_text))
         self._expected_statement_starts = expected_starts
+        self._expected_page_text_len = expected_text_len
         return unique
 
     @override
@@ -300,6 +349,7 @@ class HmmtSeries(Series):
             point_value_list_markers=True,
             strict_section_restarts=True,
             page_initial_point_restart=True,
+            split_glued_bare_markers=True,
             equation_text_overlap=0.3,
             solution_equation_text_overlap=True,
             solution_answer_box_filter=True,
@@ -357,6 +407,33 @@ class HmmtSeries(Series):
         return _clean_hmmt_markdown(markdown)
 
     @override
+    def validate_solution_markdown(self, page_index: int, markdown: str) -> bool:
+        """Reject a solution page the OCR abandoned on a figure-heavy layout.
+
+        A diagram at the top of the page can end the transcription right there,
+        leaving ``<img></img>`` (or an empty fence) in place of every worked
+        solution below it -- a clean, cacheable response that silently drops
+        problems. These packets are born-digital, so the page's own text layer is
+        an honest floor on how much prose the page holds.
+
+        Only a near-empty response is rejected. Counting problem markers the way
+        ``validate_statement_markdown`` does would fail a tenth of all solution
+        pages, whose restated markers legitimately differ from the source's, and
+        force needless re-OCR. Measured over this series, every genuinely
+        abandoned page transcribes under a fifth of its text layer while the
+        thinnest healthy page still reaches nearly two thirds, so the cutoff sits
+        in open space between them.
+        """
+        lengths = getattr(self, "_expected_page_text_len", ())
+        if page_index >= len(lengths):
+            return True
+        source_length = lengths[page_index]
+        if source_length < _MIN_VALIDATED_PAGE_TEXT:
+            return True
+        cleaned = _clean_hmmt_markdown(markdown)
+        return len(cleaned) >= _MIN_PAGE_TEXT_FRACTION * source_length
+
+    @override
     def postprocess(self, problems):
         for problem in problems:
             kept = []
@@ -401,6 +478,8 @@ class HmmtSeries(Series):
             self.match_marker(),
             point_value_list_markers=True,
             strict_section_restarts=True,
+            page_initial_point_restart=True,
+            split_glued_bare_markers=True,
         ):
             if item["problem"] is None:
                 continue
@@ -457,6 +536,7 @@ def _group_blocks(full_text: str, match) -> dict:
         point_value_list_markers=True,
         strict_section_restarts=True,
         page_initial_point_restart=True,
+        split_glued_bare_markers=True,
     ):
         if item["problem"] is None or item["kind"] != "text":
             continue
@@ -489,8 +569,38 @@ def _answer_value(block: str) -> str:
             if following.strip():
                 return _explicit_answer_prefix(following.strip())
         return ""
-    # No explicit "Answer:" line -- fall back to the boxed final answer.
-    return _boxed_answer(block) or ""
+    # No explicit "Answer:" line -- take the value off the solution's own label
+    # line, else fall back to the boxed final answer.
+    return _solution_line_answer(block) or _boxed_answer(block) or ""
+
+
+def _solution_line_answer(block: str) -> str:
+    """The value printed on a ``Solution: <value>`` line, or ``""``.
+
+    Older documents label the answer only there. The tail must be pure value:
+    once math spans and LaTeX commands are removed nothing wordlike may survive,
+    so "Solution: We use induction" and a stray "**" both fail and leave the
+    block to the boxed fallback (and then the LLM), which is the safe direction
+    for an answer key.
+    """
+    for line in block.splitlines():
+        match = _SOLUTION_ANSWER_RE.match(line)
+        if match is None:
+            continue
+        tail = match.group(1).strip().strip("*_ ").strip()
+        if not tail or _WORD_RE.search(tail) is None:
+            return ""
+        # The OCR renders the printed answer box as a checkbox glyph, sometimes
+        # keeping the value beside it. Whether the glyph ate the value or not is
+        # not decidable here, so defer to the later tiers exactly as an
+        # "Answer: ☐" line does.
+        if tail.startswith(_ANSWER_CHECKBOXES):
+            return ""
+        prose = _LATEX_COMMAND_RE.sub(" ", _INLINE_MATH_RE.sub(" ", tail))
+        if _PROSE_WORD_RE.search(prose) is not None:
+            return ""
+        return _boxed_answer(tail) or tail.strip(" $").rstrip(".").strip()
+    return ""
 
 
 def _is_standalone_answer(value: str) -> bool:
@@ -513,12 +623,22 @@ def _explicit_answer_prefix(value: str) -> str:
     if not value or value.startswith(_ANSWER_CHECKBOXES):
         return ""
 
-    # A leading unboxed math span is an answer followed by flattened prose.
-    # Do not trust a boxed prefix in this situation: Nanonets can crop a stacked
-    # fraction inside the box (2008 November Guts problem 24).
+    # A leading math span is the answer, followed by flattened prose. The box is
+    # the officially printed value, and whole-page OCR routinely flattens
+    # "Answer: \boxed{X}" together with the whole proof, so a prose tail says
+    # nothing about whether the box itself is sound. (Where the OCR crops a
+    # stacked fraction inside the box -- 2008 November Guts problem 24 -- the
+    # value is already gone from the transcription and no downstream tier,
+    # including the LLM, can recover it; refusing the box only made the same
+    # wrong answer arrive less predictably.)
     math = _INLINE_MATH_RE.match(value)
-    if math is not None and r"\boxed" not in math.group(0):
-        return math.group(0).strip("$").strip()
+    if math is not None:
+        span = math.group(0)
+        if r"\boxed" not in span:
+            return span.strip("$").strip()
+        boxed = _boxed_answer(span)
+        if boxed and _DEGENERATE_BOX_RE.match(boxed) is None:
+            return boxed
 
     # The same flattening commonly produces "64 Each term ..." or
     # "5.85086 Let ...". Keep the numeric prefix unless it is visibly only the
@@ -581,6 +701,12 @@ def _bare_answer(block: str) -> str:
     """`block` treated as a verbatim bare answer (Guts key), cleaned, or ""."""
     stripped = block.strip()
     if not stripped or "\n" in stripped or stripped.endswith("?"):
+        return ""
+    # A pointer to another round's worked solution is content, not a bare answer.
+    # Counting it as one lets a General round -- which reuses subject-test
+    # problems and prints only pointers -- pass for a Guts answer key, dropping
+    # every one of those solutions.
+    if _CROSS_REFERENCE_RE.search(stripped) is not None:
         return ""
     if len(stripped) > _BARE_ANSWER_MAX_LEN:
         return ""

@@ -18,8 +18,12 @@ from . import config
 from .anchors import _match_marker
 
 # <img ...>desc</img>  or self-closing <img .../>
+# An ``<img>`` whose ``</img>`` the OCR forgot to emit must not swallow the text
+# after it: the body may not span another opening tag, so an unterminated tag
+# falls through to the bare-tag alternative and the following prose stays text.
 _IMG_RE = re.compile(
-    r"<img\b[^>]*>(.*?)</img>|<img\b[^>]*/?>", re.IGNORECASE | re.DOTALL
+    r"<img\b[^>]*>((?:(?!<img\b).)*?)</img>|<img\b[^>]*/?>",
+    re.IGNORECASE | re.DOTALL,
 )
 # ``parse_layout`` normally tokenizes image tags before it looks at tables.
 # Some OCR responses, however, wrap an entire MATHCOUNTS statement in ``<img>``

@@ -38,12 +38,36 @@ def _ensure_client():
     return _client, _model
 
 
+def _unwrap_boxed(value):
+    r"""Unwrap a reply that echoed the source's ``\boxed{...}``, or return it as is.
+
+    Models routinely copy the box along with the answer. Only an exact wrapper is
+    an echo: trailing text means the box was merely the reply's first clause, so
+    the value is left alone rather than silently truncated. Braces are matched by
+    depth so a nested ``\frac{a}{b}`` survives.
+    """
+    opener = r"\boxed{"
+    if not value.startswith(opener):
+        return value
+    depth = 0
+    for index in range(len(opener) - 1, len(value)):
+        if value[index] == "{":
+            depth += 1
+        elif value[index] == "}":
+            depth -= 1
+            if depth == 0:
+                if index != len(value) - 1:
+                    return value
+                return value[len(opener) : index]
+    return value
+
+
 def _clean(reply):
     """Reduce a raw LLM reply to a bare answer string, or None.
 
-    Strips code fences, LaTeX delimiters, and surrounding emphasis; keeps only
-    the first line (a multi-line reply is prose, not an answer); and treats an
-    empty reply or an "UNKNOWN" refusal as no answer.
+    Strips code fences, LaTeX delimiters, an echoed answer box, and surrounding
+    emphasis; keeps only the first line (a multi-line reply is prose, not an
+    answer); and treats an empty reply or an "UNKNOWN" refusal as no answer.
     """
     if not reply:
         return None
@@ -52,6 +76,8 @@ def _clean(reply):
     out = re.sub(r"^\$+|\$+$", "", out).strip()
     out = re.sub(r"^\\[(\[]|\\[)\]]$", "", out).strip()
     out = re.sub(r"^\*+|\*+$", "", out).strip()
+    out = _unwrap_boxed(out).strip()
+    out = re.sub(r"^\$+|\$+$", "", out).strip()
     if not out or "UNKNOWN" in out.upper():
         return None
     return out
