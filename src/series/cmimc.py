@@ -45,7 +45,6 @@ from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
 from .base import CoverageException, Series, Test
 from .smt import _boxed_answer
 
-
 _SOLUTION_LINE_RE = re.compile(
     r"^\s*(?:[*_#]{0,3}\s*)?Solutions?(?:\s+\d+)?\s*[*_]{0,2}\s*[.:]?\s*(.*)$",
     re.I,
@@ -86,7 +85,9 @@ _RULE_START_RE = re.compile(
 # does not identify a problem -- both components do, and _relay_number folds
 # them into the flat 1-20 the rest of the pipeline works in.
 _RELAY_RE = re.compile(r"^\s*(\d{1,2})-([12])\s*\.")
-_RELAY_MARKER_RE = re.compile(r"(?m)^[ \t]*(?:[*_#]{0,3}[ \t]*)?(\d{1,2})-([12])[ \t]*\.")
+_RELAY_MARKER_RE = re.compile(
+    r"(?m)^[ \t]*(?:[*_#]{0,3}[ \t]*)?(\d{1,2})-([12])[ \t]*\."
+)
 _RELAY_PAIRS_PER_SET = 5
 _RELAY_SET_SIZE = 10
 
@@ -104,6 +105,7 @@ def _relay_number(pair: int, leg: int) -> int:
     """Flatten a relay "<pair>-<leg>" label to a 1-20 problem number."""
     in_first_set = (pair <= _RELAY_PAIRS_PER_SET) == (leg == 1)
     return pair + (0 if in_first_set else _RELAY_SET_SIZE)
+
 
 # The whole-page OCR sometimes returns an HTML document rather than markdown.
 # Unwrapping it matters more than cosmetics: a marker inside "<p>6. Let ...</p>"
@@ -134,9 +136,7 @@ _IMG_TAG_RE = re.compile(r"(</?img>)", re.IGNORECASE)
 
 # skip_page: instruction pages, and the worked-solution pages that 2017's
 # number-theory test.pdf appends after the round itself.
-_INSTRUCTION_PAGE_RE = re.compile(
-    r"do not look at the test before the proctor", re.I
-)
+_INSTRUCTION_PAGE_RE = re.compile(r"do not look at the test before the proctor", re.I)
 _SOLUTION_PAGE_RE = re.compile(r"Proposed by|Solutions?\s+Packet", re.I)
 
 # Rounds whose problems are titled rather than numbered (see
@@ -190,6 +190,7 @@ class CmimcSeries(Series):
     has_solutions = True
     has_answers = True
     proof_test_patterns = (r"^\d+_team_computer-science$",)
+    ignored_test_substrings = ("mathdash",)
 
     @override
     def coverage_exceptions(self, test_id: str) -> dict[int, CoverageException]:
@@ -381,7 +382,9 @@ class CmimcSeries(Series):
         return {number: body for number, body in bodies.items() if body}
 
     @override
-    def postprocess_solutions(self, solutions: dict, statements: dict, test=None) -> dict:
+    def postprocess_solutions(
+        self, solutions: dict, statements: dict, test=None
+    ) -> dict:
         """Drop a "solution" that is only the problem restated.
 
         ``_solution_body`` keeps a whole block when it carries none of the
@@ -497,9 +500,7 @@ def _demote_list_markers(full_text: str) -> str:
         return full_text
     out = []
     for index, line in enumerate(lines):
-        target = next(
-            (i for i in range(len(out) - 1, -1, -1) if out[i].strip()), None
-        )
+        target = next((i for i in range(len(out) - 1, -1, -1) if out[i].strip()), None)
         if index in demote and target is not None:
             out[target] = f"{out[target]} {line.strip()}".rstrip()
         else:
@@ -543,9 +544,7 @@ def _marker_count(text: str) -> int:
     return len(
         {
             item["problem"]
-            for item in parse_layout(
-                text, _match_marker, strict_section_restarts=True
-            )
+            for item in parse_layout(text, _match_marker, strict_section_restarts=True)
             if item["problem"] is not None
         }
     )

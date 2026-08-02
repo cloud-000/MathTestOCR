@@ -290,6 +290,12 @@ class ChmmSeries(Series):
         full_text = _filter_round_text("\n\n".join(cleaned_pages), test.id)
         if not full_text.strip():
             return {}
+        # Older mixer packets are headed "Mixer Round Answers", but several
+        # entries continue with an explanation immediately after the answer.
+        # They are answer keys, not ordinary solution packets; route them
+        # through the format-specific parser before the generic block parser.
+        if "mixer" in test.id.casefold() and _is_mixer_answer_key(full_text):
+            return _parse_mixer_answers(full_text)
         grouped = _group_blocks(
             full_text,
             split_glued_bare_markers=self.layout_options().split_glued_bare_markers,
@@ -321,6 +327,48 @@ class ChmmSeries(Series):
         for number, value in _native_pdf_answers(test, native_source).items():
             answers.setdefault(number, value)
         return answers
+
+
+_MIXER_ANSWER_HEADER_RE = re.compile(
+    r"(?im)^\s*mixer\s+round\s+answers\b"
+)
+_MIXER_ANSWER_MARKER_RE = re.compile(r"(?m)^\s*(\d+)\.\s*(.*)$")
+
+
+def _is_mixer_answer_key(full_text: str) -> bool:
+    """Return whether text has CHMM's distinctive mixer answer-key heading."""
+    return bool(_MIXER_ANSWER_HEADER_RE.search(full_text))
+
+
+def _parse_mixer_answers(full_text: str) -> dict[int, str]:
+    """Parse the legacy CHMM mixer answer-key format.
+
+    Entries normally look like ``N. answer; source; acceptable range``.  A
+    few older entries append an explanation without a delimiter, so only the
+    leading answer expression is retained.  This is deliberately separate
+    from the generic CHMM parser because ordinary mixer solution packets use
+    numbered problem blocks and must keep their existing semantics.
+    """
+    answers: dict[int, str] = {}
+    for match in _MIXER_ANSWER_MARKER_RE.finditer(full_text):
+        number = int(match.group(1))
+        value = match.group(2).strip()
+        # Problem 9 puts the actual requested value at the end of a one-line
+        # derivation (``... he should sell when b = 20, or k = 345``).
+        if value.casefold().startswith("solving "):
+            result = re.search(r"\bk\s*=\s*([^.,;\s]+)", value, re.IGNORECASE)
+            if result:
+                value = result.group(1).strip("$")
+        value = re.split(
+            r"\s*;\s*|\s+(?=(?:Let|Solving|Therefore|We\s|By\s|Since\s|Telescoping))",
+            value,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
+        value = _clean_value(value)
+        if value:
+            answers[number] = value
+    return answers
 
 
 def _filter_round_text(full_text: str, test_id: str) -> str:
