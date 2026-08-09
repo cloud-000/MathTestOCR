@@ -17,3 +17,4 @@ out/
 cached.txt
 scratch.py
 .env
+tests/

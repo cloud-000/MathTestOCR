@@ -44,9 +44,7 @@ _TRAILING_INSTRUCTIONS_RE = re.compile(
     r"Solutions?\s+(?:must|should)\s+be\s+(?:mailed|submitted)\b"
     r")"
 )
-_STATEMENT_MARKER_RE = re.compile(
-    r"(?m)^\s*[*_#]*\s*\d+\s*/\s*\d+\s*/\s*\d+\s*\."
-)
+_STATEMENT_MARKER_RE = re.compile(r"(?m)^\s*[*_#]*\s*\d+\s*/\s*\d+\s*/\s*\d+\s*\.")
 _LOGO_IMG_RE = re.compile(
     r"<img\b[^>]*>\s*(?:USA\s*MTS|USAMTS)\s*</img>",
     re.IGNORECASE | re.DOTALL,
@@ -253,10 +251,9 @@ def _recover_missing_problem_bodies(bodies):
             if not _COMMENT_RE.match(line):
                 continue
             trailing = lines[i + 1 :]
-            if (
-                any(_SOLUTION_HEADER_RE.match(candidate) for candidate in lines[:i])
-                and any(_SOLUTION_ONE_RE.match(candidate) for candidate in trailing)
-            ):
+            if any(
+                _SOLUTION_HEADER_RE.match(candidate) for candidate in lines[:i]
+            ) and any(_SOLUTION_ONE_RE.match(candidate) for candidate in trailing):
                 recovered[number] = lines[:i]
                 recovered[number + 1] = trailing
                 break
@@ -269,9 +266,7 @@ def _recover_missing_problem_bodies(bodies):
         if missing in recovered or previous not in recovered:
             continue
         lines = recovered[previous]
-        starts = [
-            i for i, line in enumerate(lines) if _SOLUTION_HEADER_RE.match(line)
-        ]
+        starts = [i for i, line in enumerate(lines) if _SOLUTION_HEADER_RE.match(line)]
         if len(starts) >= 2:
             split = starts[-1]
             recovered[previous] = lines[:split]
@@ -282,6 +277,7 @@ def _recover_missing_problem_bodies(bodies):
 class UsamtsSeries(Series):
     name = "usamts"
     has_solutions = True
+    proof_test_patterns = (r"^\d+_\d+$",)
 
     @override
     def discover_tests(self, data_dir):

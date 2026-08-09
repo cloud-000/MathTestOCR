@@ -15,7 +15,6 @@ from pathlib import Path
 from .. import config
 from .base import Series, Test, strip_solution_page_furniture
 
-
 _SOLUTION_FURNITURE_RE = re.compile(
     r"^(?:"
     # Older solution PDFs use the full "AT MATH PRIZE FOR GIRLS ..."
@@ -32,9 +31,7 @@ _SOLUTION_FURNITURE_RE = re.compile(
 # explicit ``Problem N`` headings.  Restrict solution segmentation to those
 # headings: a worked solution can legitimately contain an ordered list such as
 # ``1.``, ``2.``, ``3.``, which is not a sequence of new contest problems.
-_SOLUTION_MARKER_RE = re.compile(
-    r"^\s*(?:\*{1,2}\s*)?Problem\s+(\d+)\b", re.IGNORECASE
-)
+_SOLUTION_MARKER_RE = re.compile(r"^\s*(?:\*{1,2}\s*)?Problem\s+(\d+)\b", re.IGNORECASE)
 
 
 def _match_solution_marker(text: str):
@@ -48,6 +45,7 @@ class MpfgSeries(Series):
     name = "mpfg"
     has_solutions = True
     has_answers = True
+    proof_test_patterns = (r"^\d{4}_olympiad$",)
 
     def discover_tests(self, data_dir):
         """One test per ``<year>/<division>/test.pdf`` under the data dir."""
@@ -122,7 +120,7 @@ class MpfgSeries(Series):
         marks = list(self._MARKER_RE.finditer(full_text))
         for m, nxt in zip(marks, marks[1:] + [None]):
             end = nxt.start() if nxt is not None else len(full_text)
-            block = full_text[m.end():end]
+            block = full_text[m.end() : end]
             am = re.search(
                 r"Answer:\*{0,2}\s*(.*?)\s*(?:\*{0,2}Solution:|\Z)",
                 block,
