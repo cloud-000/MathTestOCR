@@ -99,19 +99,67 @@ def _strip_solution_tail(text: str) -> str:
     return text[: m.start()].rstrip() if m else text
 
 
-def _is_answer_key_heading(line: str) -> bool:
-    """True when `line` carries the "Answer Key" heading.
+def _is_answer_key_heading(line_or_text: str) -> bool:
+    """True when line_or_text carries the "Answer Key" heading.
 
     Nanonets renders the box's small-caps title with markup *between the
     letters* ("<strong>A</strong><sub>NSWER</sub> ..."), so tags become nothing
     and all spacing is dropped before matching.
     """
-    normalized = re.sub(r"[^a-z]", "", _TAG_RE.sub("", line).lower())
+    normalized = re.sub(r"[^a-z]", "", _TAG_RE.sub("", line_or_text).lower())
     # Small-caps OCR may emit both the enlarged initial and its subscript
     # counterpart: A + ANSWER, K + KEY -> AANSWERKKEY.  Collapsing runs only
     # affects this visual duplication; the phrase test remains specific.
     normalized = re.sub(r"([a-z])\1+", r"\1", normalized)
-    return "answerkey" in normalized
+    if "answer" in normalized and any(
+        k in normalized for k in ("key", "ley", "ey", "ky")
+    ):
+        return True
+    # Handle split small-caps OCR like <td>A</td><td>NSWER</td><td>K</td><td>LEY</td>
+    return ("answer" in normalized or "nswer" in normalized) and any(
+        k in normalized for k in ("key", "ley", "ey", "ky")
+    )
+
+
+def _extract_table_cell_answers(table_lines):
+    """Extract answer-key entries from multi-cell / multi-line HTML table markup."""
+    table_html = "\n".join(table_lines)
+    tds = re.findall(r"<td\b[^>]*>(.*?)</td>", table_html, re.DOTALL | re.IGNORECASE)
+    cells = [_TAG_RE.sub("", td).strip() for td in tds]
+
+    answers = {}
+    i = 0
+    marker_standalone = re.compile(r"^\s*(\d{1,2})\s*[.)]\s*$")
+    marker_inline = re.compile(r"^\s*(\d{1,2})\s*[.)]\s+(.+)$", re.DOTALL)
+
+    while i < len(cells):
+        cell = cells[i]
+        m_inline = marker_inline.match(cell)
+        m_standalone = marker_standalone.match(cell)
+        if m_inline:
+            num = int(m_inline.group(1))
+            ans = m_inline.group(2).strip()
+            if ans:
+                answers[num] = ans
+            i += 1
+        elif m_standalone:
+            num = int(m_standalone.group(1))
+            if (
+                i + 1 < len(cells)
+                and not marker_standalone.match(cells[i + 1])
+                and not marker_inline.match(cells[i + 1])
+            ):
+                ans = cells[i + 1].strip()
+                if ans and ans.lower() not in ("a", "answer key", "answer", "key", "nswer", "ley"):
+                    answers[num] = ans
+                    i += 2
+                else:
+                    i += 1
+            else:
+                i += 1
+        else:
+            i += 1
+    return answers
 
 
 def _split_answer_key(text: str):
@@ -125,6 +173,18 @@ def _split_answer_key(text: str):
     """
     lines = text.splitlines()
     start = next((i for i, ln in enumerate(lines) if _is_answer_key_heading(ln)), None)
+    if start is None:
+        for i, ln in enumerate(lines[:30]):
+            if "<table" in ln.lower():
+                end_i = next(
+                    (j for j in range(i, len(lines)) if "</table" in lines[j].lower()),
+                    None,
+                )
+                if end_i is not None:
+                    table_block = "\n".join(lines[i : end_i + 1])
+                    if _is_answer_key_heading(table_block):
+                        start = i
+                        break
     if start is None:
         return {}, text
     def consume(line, answers, allow_leading=False, max_answer_len=None):
@@ -164,6 +224,8 @@ def _split_answer_key(text: str):
         answers = {}
         for i in range(table_start, table_end + 1):
             consume(lines[i], answers, allow_leading=(i == start))
+        if not answers:
+            answers = _extract_table_cell_answers(lines[table_start : table_end + 1])
         if answers:
             return answers, "\n".join(lines[:table_start] + lines[table_end + 1 :])
 
