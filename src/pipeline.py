@@ -1516,12 +1516,17 @@ def _solution_index_from_items(pic, items, page_height, carry_solutions, match_s
     current = dict(carry_solutions)
     for it in items:
         problem = it["problem"]
-        if problem is not None and it["kind"] == "text":
-            solution = match_solution(it["text"])
-            if solution is not None:
-                current[problem] = solution
-        spans.append((offset, problem, current.get(problem, 1) if problem else 1))
-        offset += max(len(it["text"]), 1)
+        if it["kind"] == "image":
+            spans.append((offset, problem, current.get(problem, 1) if problem else 1))
+            offset += max(len(it["text"]), 1)
+        else:
+            for line in it["text"].splitlines():
+                if problem is not None and match_solution is not None:
+                    sol = match_solution(line)
+                    if sol is not None:
+                        current[problem] = sol
+                spans.append((offset, problem, current.get(problem, 1) if problem else 1))
+                offset += max(len(line) + 1, 1)
     if not spans:
         return 1
     yc = (pic["box"][1] + pic["box"][3]) / 2
@@ -1580,34 +1585,39 @@ def _assign_solution_pics(
     Returns [(picture_det, problem_number | None, solution_index), ...].
     """
     carry_solutions = carry_solutions or {}
-    item_solutions = []
+    spans = []  # (start_offset, problem, solution)
+    offset = 0
     current_solutions = dict(carry_solutions)
     for it in items:
         problem = it["problem"]
-        if problem is not None and it["kind"] == "text" and match_solution is not None:
-            solution = match_solution(it["text"])
-            if solution is not None:
-                current_solutions[problem] = solution
-        item_solutions.append(current_solutions.get(problem, 1) if problem else 1)
+        if it["kind"] == "image":
+            spans.append((offset, problem, current_solutions.get(problem, 1) if problem else 1))
+            offset += max(len(it["text"]), 1)
+        else:
+            for line in it["text"].splitlines():
+                if problem is not None and match_solution is not None:
+                    sol = match_solution(line)
+                    if sol is not None:
+                        current_solutions[problem] = sol
+                spans.append((offset, problem, current_solutions.get(problem, 1) if problem else 1))
+                offset += max(len(line) + 1, 1)
 
     numbers = {it["problem"] for it in items if it["problem"] is not None}
     if not numbers:
         solution = carry_solutions.get(carry, 1) if carry is not None else 1
         return [(p, carry, solution) for p in pics]
+
     img_items = [it for it in items if it["kind"] == "image"]
     if len(img_items) == len(pics):
         img_solutions = [
-            sol for it, sol in zip(items, item_solutions) if it["kind"] == "image"
+            _solution_index_from_items(p, items, page_height, carry_solutions, match_solution)
+            for p in pics
         ]
         return [
             (p, it["problem"], sol)
             for p, it, sol in zip(pics, img_items, img_solutions)
         ]
-    spans = []  # (start_offset, problem, solution) per item, in reading order
-    offset = 0
-    for it, solution in zip(items, item_solutions):
-        spans.append((offset, it["problem"], solution))
-        offset += max(len(it["text"]), 1)
+
     assigned = []
     for pic in pics:
         yc = (pic["box"][1] + pic["box"][3]) / 2
@@ -1622,6 +1632,7 @@ def _assign_solution_pics(
                 solution = sol
         assigned.append((pic, number, solution))
     return assigned
+
 
 
 def process_solution_document(

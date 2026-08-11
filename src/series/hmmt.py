@@ -323,6 +323,8 @@ class HmmtSeries(Series):
     has_solutions = True
     has_answers = True
     proof_test_patterns = (r"^\d{4}_hmic$",)
+    split_multiple_solutions = True
+
 
     @override
     def coverage_exceptions(self, test_id: str) -> dict[int, CoverageException]:
@@ -576,7 +578,21 @@ class HmmtSeries(Series):
         bare = [b for b in nonempty if _bare_answer(b)]
         if nonempty and len(bare) >= _ANSWER_KEY_BARE_FRAC * len(nonempty):
             return {n: b for n, b in bodies.items() if b and not _bare_answer(b)}
-        return bodies
+
+        if not self.split_multiple_solutions:
+            return bodies
+
+        result = {}
+        for n, parts in grouped.items():
+            raw_block = "\n".join(parts)
+            chunks = self.split_solution_block(raw_block)
+            cleaned = [_solution_body(c) for c in chunks if c.strip()]
+            cleaned = [c for c in cleaned if c]
+            if cleaned:
+                result[n] = cleaned if len(cleaned) > 1 else cleaned[0]
+        return result
+
+
 
     @override
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:
@@ -865,10 +881,14 @@ def _solution_body(block: str) -> str:
     return "\n".join(line for line in lines if not _PROPOSED_RE.match(line)).strip()
 
 
-def _strip_restatement(solution: str, statement: str) -> str:
+def _strip_restatement(solution, statement):
     """Remove an exact word-for-word statement prefix from an unlabeled solution."""
+    if isinstance(solution, (list, tuple)):
+        result = [_strip_restatement(s, statement) for s in solution]
+        return [r for r in result if r]
     if not solution or not statement:
         return solution
+
     statement = _IMAGE_REF_RE.sub("", statement)
     statement_words = [m.group(0).casefold() for m in _WORD_RE.finditer(statement)]
     solution_matches = list(_WORD_RE.finditer(solution))

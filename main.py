@@ -23,8 +23,10 @@ Examples:
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
+
 from dataclasses import replace
 from pathlib import Path
 
@@ -433,6 +435,19 @@ def _has_nonempty_json(path: Path) -> bool:
         return False
 
 
+def _existing_solution_figures(dest: Path) -> dict:
+    figures = {}
+    pattern = re.compile(r"^problem_(\d+)_solution_(\d+)_image_(\d+)\.png$")
+    if dest.exists():
+        for file in dest.glob("problem_*_solution_*_image_*.png"):
+            m = pattern.match(file.name)
+            if m:
+                num = int(m.group(1))
+                sol = int(m.group(2))
+                figures.setdefault(num, {}).setdefault(sol, []).append(file.name)
+    return figures
+
+
 def _scrape_solutions(args, series, test, sol, dest, model):
     """OCR one test's solution document into solution text + figure crops.
 
@@ -444,9 +459,46 @@ def _scrape_solutions(args, series, test, sol, dest, model):
         _has_nonempty_json(dest / "problem_solution.json")
         or _has_nonempty_json(dest / "solutions.json")
     )
+    if getattr(args, "reparse", False):
+        cache_path = dest / SOLUTION_CACHE
+        if not cache_path.exists():
+            log(f"[{series.name}] skip {test.id} (no {SOLUTION_CACHE} found to reparse)")
+            return None
+        log(f"[{series.name}] reparsing solutions from cache for {test.id} ...")
+        cache_data = json.loads(cache_path.read_text())
+        pages_md = [
+            cache_data[f"page_{i}.png"]
+            for i in range(1, len(cache_data) + 1)
+            if f"page_{i}.png" in cache_data
+        ]
+        if not pages_md:
+            pages_md = list(cache_data.values())
+
+        cleaned = "\n\n".join(
+            series.clean_solution_markdown(i, md) for i, md in enumerate(pages_md)
+        )
+        solutions = series.parse_solutions(cleaned, test=test)
+
+        statements = {}
+        statement_path = dest / "problems.json"
+        if statement_path.exists():
+            try:
+                statements = json.loads(statement_path.read_text())
+            except (OSError, ValueError):
+                statements = {}
+        solutions = series.postprocess_solutions(solutions, statements, test=test)
+
+        figures = _existing_solution_figures(dest)
+        path_prefix = f"{series.name}/{test.id}/"
+        solutions = inline_solution_figures(solutions, figures, path_prefix)
+        n = output.write_solutions(solutions, dest)
+        log(f"[{series.name}] wrote {n} solution(s) from cache -> {dest}")
+        return pages_md
+
     if has_existing_solution and not args.force:
         log(f"[{series.name}] skip {test.id} solutions (exist; --force to redo)")
         return None
+
     log(f"[{series.name}] scraping solutions for {test.id} ...")
     cache = OCRCache(dest / SOLUTION_CACHE, enabled=args.cache)
     pages_md = None
@@ -781,10 +833,16 @@ def main():
         "--force", action="store_true", help="re-scrape even if solution JSON exists"
     )
     p_sol.add_argument(
+        "--reparse",
+        action="store_true",
+        help="re-parse solution blocks from ocr_cache_solutions.json without re-running DETR layout detection or rendering pages",
+    )
+    p_sol.add_argument(
         "--existing",
         action="store_true",
         help="only process tests that already have an out/<series>/<test>/ folder",
     )
+
     _add_engine_args(p_sol)
     p_sol.set_defaults(func=cmd_solutions)
 

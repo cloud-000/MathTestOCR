@@ -277,7 +277,9 @@ def _recover_missing_problem_bodies(bodies):
 class UsamtsSeries(Series):
     name = "usamts"
     has_solutions = True
+    split_multiple_solutions = True
     proof_test_patterns = (r"^\d+_\d+$",)
+
 
     @override
     def discover_tests(self, data_dir):

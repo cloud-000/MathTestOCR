@@ -45,6 +45,7 @@ class MpfgSeries(Series):
     name = "mpfg"
     has_solutions = True
     has_answers = True
+    split_multiple_solutions = True
     proof_test_patterns = (r"^\d{4}_olympiad$",)
 
     def discover_tests(self, data_dir):

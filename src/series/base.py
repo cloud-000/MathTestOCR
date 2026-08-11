@@ -27,10 +27,25 @@ _SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _ANSWER_ENTRY_RE = re.compile(r"(?:^|(?<=\s))(\d{1,3})\s*[.)]\s+")
 _TAG_RE = re.compile(r"<[^>]+>")
 _BLANK_RUN_RE = re.compile(r"_{2,}")  # answer blanks: "1. ________ 42"
+_ORDINAL_MAP = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+}
 _SOLUTION_INDEX_RE = re.compile(
-    r"^\s*(?:\*{1,2}|#+\s*|\\textbf\{)?\s*Solution\s+(\d+)\b",
+    r"^\s*(?:\*{1,2}|_+|#+\s*|\\textbf\{)?\s*"
+    r"(?:"
+    r"(?:(First|Second|Third|Fourth|Fifth|Sixth|Seventh|Eighth)\s+Solution)"
+    r"|(?:Solution|Method)\s+(\d+)\b"
+    r")",
     re.IGNORECASE,
 )
+
 
 
 def strip_solution_page_furniture(markdown: str, *, line_patterns=(), inline_patterns=()):
@@ -74,6 +89,82 @@ def numbered_answers_in_line(line: str):
         end = nxt.start() if nxt is not None else len(text)
         pairs.append((int(m.group(1)), text[m.end() : end].strip()))
     return leading, pairs
+
+
+# --- Multi-solution block splitting (shared helper per series knob) ---
+DEFAULT_SOLUTION_HEADER_LINE_RE = re.compile(
+    r"^\s*(?:\*{1,2}|_+|#+\s*|\\textbf\{)?\s*"
+    r"(?:"
+    r"(?:First|Second|Third|Fourth|Fifth|Sixth|Alternative|Another|Other|Double\s+Counting|Constructive|Algebraic|Geometric|Combinatorial|Inductive|Inversion|Calculus)?\s*Solution(?:\s+\d+)?(?:\s+(?:to|for)\s+(?:\([a-z0-9]+\)|[a-z0-9]+))?"
+    r"|Method(?:\s+\d+)?"
+    r"|(?:OR|Or)\s*(?::|,|\*{1,2}|_+|\$|\s*$)"
+    r")"
+    r"\s*(?::|\.|\*{1,2}|_+|\}|\)|$)\s*(.*)$",
+    re.IGNORECASE,
+)
+
+DEFAULT_SECONDARY_SOLUTION_HEADER_RE = re.compile(
+    r"^\s*(?:\*{1,2}|_+|#+\s*|\\textbf\{)?\s*"
+    r"(?:"
+    r"(?:Second|Third|Fourth|Fifth|Sixth|Alternative|Another|Other|Double\s+Counting|Constructive|Algebraic|Geometric|Combinatorial|Inductive|Inversion|Calculus)\s+Solution"
+    r"|Solution\s+(?:[2-9]|\d{2,})\b"
+    r"|Method\s+(?:[2-9]|\d{2,})\b"
+    r"|(?:OR|Or)\s*(?::|,|\*{1,2}|_+|\$|\s*$)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+
+def split_solution_block(
+    block: str,
+    *,
+    header_re: re.Pattern | None = None,
+    secondary_re: re.Pattern | None = None,
+    strip_headers: bool = True,
+) -> list[str]:
+    """Split a single problem's OCR solution text into distinct worked solutions.
+
+    `block` is the raw text of a single problem's worked solution (possibly containing
+    multiple alternative worked solutions under headers like ``**Solution 1:**``,
+    ``**Solution 2:**``, ``Alternative Solution:``, ``Method 2:``, ``OR``, etc.).
+
+    Returns a list of solution strings `[sol_1, sol_2, ...]`. Single-solution
+    blocks return a 1-element list `[block]`.
+    """
+    if not block or not block.strip():
+        return []
+
+    hdr_pat = header_re or DEFAULT_SOLUTION_HEADER_LINE_RE
+    sec_pat = secondary_re or DEFAULT_SECONDARY_SOLUTION_HEADER_RE
+
+    lines = block.splitlines()
+    blocks = []
+    curr_lines = []
+
+    for line in lines:
+        match = hdr_pat.match(line)
+        if match is not None:
+            is_secondary = bool(sec_pat.match(line))
+            rest = match.group(1).strip(" *_:.") if strip_headers else line
+            if not blocks:
+                if is_secondary and curr_lines:
+                    blocks.append("\n".join(curr_lines).strip())
+                    curr_lines = []
+            elif curr_lines:
+                blocks.append("\n".join(curr_lines).strip())
+                curr_lines = []
+            if rest:
+                curr_lines.append(rest)
+        else:
+            curr_lines.append(line)
+
+    if curr_lines:
+        blocks.append("\n".join(curr_lines).strip())
+
+    result = [b for b in blocks if b]
+    return result if result else [block.strip()]
+
 
 
 @dataclass
@@ -147,6 +238,28 @@ class Series:
     # number of regular expressions; they are deliberately opt-in rather than
     # inferred from statement wording or a missing answer key.
     proof_test_patterns: tuple[str, ...] = ()
+
+    # Multi-solution block splitting settings. Set split_multiple_solutions = True to
+    # automatically split a problem's text into [sol1, sol2, ...] when multiple
+    # worked solution headers are present in the OCR block.
+    split_multiple_solutions: bool = False
+    solution_header_re: re.Pattern | None = None
+    secondary_solution_header_re: re.Pattern | None = None
+
+    def split_solution_block(self, block: str) -> list[str]:
+        """Split a problem's solution text into multiple worked solutions when present.
+
+        Uses ``solution_header_re`` / ``secondary_solution_header_re`` if set,
+        falling back to standard defaults. Subclasses can override this method or
+        set ``split_multiple_solutions = True`` to enable automatic multi-solution
+        splitting.
+        """
+        return split_solution_block(
+            block,
+            header_re=self.solution_header_re,
+            secondary_re=self.secondary_solution_header_re,
+        )
+
 
     # --- Discovery -------------------------------------------------------
     def discover_tests(self, data_dir):
@@ -377,7 +490,17 @@ class Series:
                 # pipeline later aligns these with DETR's crops (see
                 # pipeline.inline_solution_figures).
                 grouped.setdefault(item["problem"], []).append(FIGURE_PLACEHOLDER)
-        return {n: "\n".join(parts) for n, parts in grouped.items()}
+        bodies = {n: "\n".join(parts) for n, parts in grouped.items()}
+        if self.split_multiple_solutions:
+            res = {}
+            for n, text in bodies.items():
+                if text and text.strip():
+                    chunks = self.split_solution_block(text)
+                    res[n] = chunks if len(chunks) > 1 else chunks[0]
+            return res
+        return bodies
+
+
 
     def postprocess_solutions(
         self, solutions: dict, statements: dict, test: Test = None
@@ -408,8 +531,12 @@ class Series:
         for line in text.splitlines():
             m = _SOLUTION_INDEX_RE.match(line.strip())
             if m is not None:
-                solution = int(m.group(1))
+                if m.group(1):
+                    solution = _ORDINAL_MAP.get(m.group(1).lower())
+                elif m.group(2):
+                    solution = int(m.group(2))
         return solution
+
 
     # --- Answers ----------------------------------------------------------
     def scrape_answers(self, test: Test) -> dict:
