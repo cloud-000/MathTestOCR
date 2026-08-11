@@ -188,6 +188,8 @@ def _unwrap_image_groups(text: str) -> str:
 class CmimcSeries(Series):
     name = "cmimc"
     has_solutions = True
+    split_multiple_solutions = True
+
     has_answers = True
     proof_test_patterns = (r"^\d+_team_computer-science$",)
     ignored_test_substrings = ("mathdash",)
@@ -379,7 +381,15 @@ class CmimcSeries(Series):
             number: _solution_body(block)
             for number, block in _group_blocks(full_text, _is_titled(test)).items()
         }
+        if self.split_multiple_solutions:
+            res = {}
+            for n, text in bodies.items():
+                if text and text.strip():
+                    chunks = self.split_solution_block(text)
+                    res[n] = chunks if len(chunks) > 1 else chunks[0]
+            return res
         return {number: body for number, body in bodies.items() if body}
+
 
     @override
     def postprocess_solutions(

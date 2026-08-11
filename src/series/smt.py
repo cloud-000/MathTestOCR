@@ -138,6 +138,8 @@ class SmtSeries(Series):
     name = "smt"
     has_solutions = True
     has_answers = True
+    split_multiple_solutions = True
+
 
     @override
     def discover_tests(self, data_dir):
@@ -344,7 +346,16 @@ class SmtSeries(Series):
                 continue
             value = item["text"] if item["kind"] == "text" else FIGURE_PLACEHOLDER
             grouped.setdefault(item["problem"], []).append(value)
-        return {n: _solution_body("\n".join(parts)) for n, parts in grouped.items()}
+        bodies = {n: _solution_body("\n".join(parts)) for n, parts in grouped.items()}
+        if self.split_multiple_solutions:
+            res = {}
+            for n, text in bodies.items():
+                if text and text.strip():
+                    chunks = self.split_solution_block(text)
+                    res[n] = chunks if len(chunks) > 1 else chunks[0]
+            return res
+        return bodies
+
 
     @override
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:

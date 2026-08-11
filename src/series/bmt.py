@@ -175,6 +175,8 @@ class BmtSeries(Series):
     name = "bmt"
     has_solutions = True
     has_answers = True
+    split_multiple_solutions = True
+
 
     @override
     def match_marker(self):
@@ -402,7 +404,17 @@ class BmtSeries(Series):
             strictly_increasing=getattr(self, "_active_test_id", "")
             in _STRICTLY_INCREASING_SOLUTION_MARKER_TESTS,
         )
-        return {n: _solution_body("\n".join(parts)) for n, parts in grouped.items()}
+        bodies = {n: _solution_body("\n".join(parts)) for n, parts in grouped.items()}
+        if self.split_multiple_solutions:
+            res = {}
+            for n, text in bodies.items():
+                if text and text.strip():
+                    chunks = self.split_solution_block(text)
+                    res[n] = chunks if len(chunks) > 1 else chunks[0]
+            return res
+        return bodies
+
+
 
     @override
     def postprocess_solutions(self, solutions, statements, test=None):

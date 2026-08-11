@@ -109,6 +109,8 @@ class ChmmSeries(Series):
     name = "chmm"
     has_solutions = True
     has_answers = True
+    split_multiple_solutions = True
+
     ignored_test_substrings = ("math-talk", "tcs")
     proof_test_patterns = (r"^\d{4}_(?:fall|winter|spring|annual)_proof$",)
 
@@ -255,9 +257,18 @@ class ChmmSeries(Series):
         # belong in problem_answer.json only.
         if _is_answer_key(full_text):
             return {}
-        solutions = {
+        bodies = {
             number: _solution_body(block) for number, block in grouped.items()
         }
+        if self.split_multiple_solutions:
+            solutions = {}
+            for n, text in bodies.items():
+                if text and text.strip():
+                    chunks = self.split_solution_block(text)
+                    solutions[n] = chunks if len(chunks) > 1 else chunks[0]
+        else:
+            solutions = bodies
+
         # Two mixer packets present a dependency-chain solution only after the
         # final problem in each part. Associate that shared derivation with all
         # problems it solves instead of retaining the repeated problem prompts

@@ -238,6 +238,8 @@ class PumacSeries(Series):
     name = "pumac"
     has_solutions = True
     has_answers = True
+    split_multiple_solutions = True
+
     proof_test_patterns = (r"^\d{4}_[AB]_individual_finals$",)
 
     @override
@@ -519,11 +521,19 @@ class PumacSeries(Series):
         )
         if test is not None and test.id.startswith("2008_"):
             blocks = _remap_2008_blocks(test, blocks)
-        solutions = {}
+        bodies = {}
         for number, block in blocks.items():
             body = _solution_body(block)
             if body:
-                solutions[number] = body
+                bodies[number] = body
+        if self.split_multiple_solutions:
+            solutions = {}
+            for n, text in bodies.items():
+                if text and text.strip():
+                    chunks = self.split_solution_block(text)
+                    solutions[n] = chunks if len(chunks) > 1 else chunks[0]
+        else:
+            solutions = bodies
         if test is not None and _is_crossword_test(test.id):
             solutions = _flatten_crossword_mapping(solutions)
         return solutions
@@ -534,8 +544,12 @@ class PumacSeries(Series):
         cleaned = {}
         for number, value in solutions.items():
             statement = statements.get(str(number), "")
-            cleaned[number] = _strip_statement_prefix(value, statement)
+            if isinstance(value, list):
+                cleaned[number] = [_strip_statement_prefix(v, statement) for v in value]
+            else:
+                cleaned[number] = _strip_statement_prefix(value, statement)
         return cleaned
+
 
     @override
     def postprocess_solution_figures(self, figures, test=None, full_text=""):
