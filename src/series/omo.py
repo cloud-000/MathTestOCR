@@ -36,7 +36,24 @@ _OMO_RUNNING_FURNITURE_RE = re.compile(
     r"(?:OMO|online\s+math\s+open)\b.*"
     r"|official\s+solutions?"
     r"|(?:fall|spring|winter)\s+\d{4}"
+    r"|(?:fall|spring|winter)\s+OMO\b.*"
     r"|page\s+\d+"
+    r")$",
+    re.IGNORECASE,
+)
+_OMO_DATE_FURNITURE_RE = re.compile(
+    r"^(?:"
+    r"January|February|March|April|May|June|"
+    r"July|August|September|October|November|December"
+    r")(?:/(?:"
+    r"January|February|March|April|May|June|"
+    r"July|August|September|October|November|December"
+    r"))?\s+(?:"
+    r"\d{1,2}\s*[-–—]\s*(?:(?:"
+    r"January|February|March|April|May|June|"
+    r"July|August|September|October|November|December"
+    r")\s+)?\d{1,2},?\s+\d{4}"
+    r"|\d{4}(?:\s+(?:(?:fall|spring|winter)\s+)?OMO\b.*)?"
     r")$",
     re.IGNORECASE,
 )
@@ -90,7 +107,21 @@ class OmoSeries(Series):
     @override
     def layout_options(self):
         """Keep statement and solution figures at their reading-order position."""
-        return config.LayoutOptions(inline_figures=True)
+        return config.LayoutOptions(
+            inline_figures=True,
+            solution_answer_box_filter=True,
+        )
+
+    @override
+    def clean_statement_markdown(self, page_index: int, markdown: str) -> str:
+        """Drop OMO's repeated edition/date masthead before page carry."""
+        return strip_solution_page_furniture(
+            markdown,
+            line_patterns=(
+                _OMO_RUNNING_FURNITURE_RE,
+                _OMO_DATE_FURNITURE_RE,
+            ),
+        )
 
     @override
     def solution_source(self, test: Test):
