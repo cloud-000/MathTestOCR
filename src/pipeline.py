@@ -1278,6 +1278,7 @@ def process_image_markdown(
         consecutive_problem_markers=layout.consecutive_problem_markers,
         page_initial_point_restart=layout.page_initial_point_restart,
         flat_problem_numbering=layout.flat_problem_numbering,
+        backreference_problem_markers=layout.backreference_problem_markers,
         split_glued_bare_markers=layout.split_glued_bare_markers,
     )
 
@@ -1741,7 +1742,14 @@ def process_solution_document(
         )
         pages_md.append(markdown)
         if clean_page is not None:
+            raw_markdown = markdown
             markdown = clean_page(index, markdown)
+            # A series cleanup that blanks a solution page has classified the
+            # entire page as furniture/non-test material. Suppress its detected
+            # figures too; otherwise they fall through under the carried problem
+            # even though their corresponding text was deliberately removed.
+            if raw_markdown.strip() and not markdown.strip():
+                continue
         items = nanonets_mod.parse_layout(
             markdown,
             match,
@@ -1758,6 +1766,7 @@ def process_solution_document(
             consecutive_problem_markers=layout.consecutive_problem_markers,
             page_initial_point_restart=layout.page_initial_point_restart,
             flat_problem_numbering=layout.flat_problem_numbering,
+            backreference_problem_markers=layout.backreference_problem_markers,
             split_glued_bare_markers=layout.split_glued_bare_markers,
         )
         # pdf_io names rendered pages "page_<pdf page number>.png".
@@ -1830,7 +1839,8 @@ def process_solution_document(
                     carry_solutions[number] = solution
         page_numbers = [it["problem"] for it in items if it["problem"] is not None]
         if page_numbers:
-            carry = max(page_numbers)
+            page_max = max(page_numbers)
+            carry = page_max if carry is None else max(carry, page_max)
     if doc is not None:
         doc.close()
     figures = {}

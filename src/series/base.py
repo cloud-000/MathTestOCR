@@ -479,6 +479,7 @@ class Series:
             strict_section_restarts=opts.strict_section_restarts,
             consecutive_problem_markers=opts.consecutive_problem_markers,
             page_initial_point_restart=opts.page_initial_point_restart,
+            backreference_problem_markers=opts.backreference_problem_markers,
             split_glued_bare_markers=opts.split_glued_bare_markers,
         ):
             if item["problem"] is None:

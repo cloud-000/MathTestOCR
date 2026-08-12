@@ -511,6 +511,7 @@ def parse_layout(
     consecutive_problem_markers=False,
     page_initial_point_restart=False,
     flat_problem_numbering=False,
+    backreference_problem_markers=False,
     split_glued_bare_markers=False,
 ):
     """Turn Nanonets markdown into an ordered list of items.
@@ -546,6 +547,10 @@ def parse_layout(
     a heading that is only a generic section label ("# Solutions") is not a
     problem start, and numeric markers stop being ones -- on these pages they
     are steps of a statement's own numbered list.
+
+    `backreference_problem_markers` lets a decreasing marker bind following
+    content to that earlier problem without adding a section offset. It is for
+    explicitly labelled continuation/appendix figures and is series-scoped.
     """
     match_marker = match_marker or _match_marker
     markdown = _FURNITURE_RE.sub("", markdown)
@@ -603,6 +608,17 @@ def parse_layout(
             return False
         first_page_marker = not page_marker_seen
         page_marker_seen = True
+        if (
+            backreference_problem_markers
+            and last_raw is not None
+            and raw_num < last_raw
+        ):
+            flush()
+            current = raw_num
+            last_raw = raw_num
+            saw_heading = False
+            saw_point_value_marker = saw_point_value_marker or has_point_value
+            return True
         is_restart = False
         if (
             not flat_problem_numbering
