@@ -29,7 +29,13 @@ class PurpleCometSeries(Series):
         # line above the statement, so DETR sees two left-margin boxes per problem.
         # Take the problem start from the heading alone, or figure assignment
         # drifts down the page (a problem-3 figure lands on problem 6).
-        return config.LayoutOptions(problem_start_from_headers=True)
+        # Its tests also use one flat, increasing problem sequence. Rejecting
+        # number restarts keeps in-statement numbered lists (such as 2011 MS
+        # problem 19's conditions) attached to their enclosing problem.
+        return config.LayoutOptions(
+            problem_start_from_headers=True,
+            flat_problem_numbering=True,
+        )
 
     def discover_tests(self, data_dir):
         """One test per ``<year>/<division>/test.pdf`` under the data dir."""
@@ -57,9 +63,3 @@ class PurpleCometSeries(Series):
                 continue
             answers[int(number)] = answer
         return answers
-
-    def postprocess(self, problems):
-        # TODO: merge problem 19's nested "1. 2. 3." conditions back into its
-        # statement instead of treating them as separate problems (needs a real
-        # OCR run to validate the heuristic before implementing).
-        return problems
