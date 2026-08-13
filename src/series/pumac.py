@@ -60,6 +60,77 @@ _CROSSWORD_BASES = {
     "down_left": 2000,
     "down_right": 3000,
 }
+# Answers verified by hand against the packet, for problems none of the three
+# readers can resolve: these print no marker at all, so the value has to be
+# computed from the solution's closing line, or the OCR mangled it into different
+# mathematics. Each entry records what the solution says so it can be re-checked.
+#
+# These are the only answers in this series not produced by parsing. They are
+# applied last (see `parse_answers`), so a `--reparse --force` sweep cannot
+# overwrite them. **Re-check them after any change to the solution-OCR path**: a
+# better transcription can make an override unnecessary, and a stale one would
+# silently mask the improvement. Several are A/B division reprints of one
+# problem, and are listed under both tests because each is keyed separately.
+_VERIFIED_ANSWERS = {
+    # "so calculating the powers in these three factorials,
+    #  m = v_2(200!) - v_2(90!) - v_2(111!) = 197 - 86 - 105 = 6"
+    "2011_A_combinatorics": {7: "6"},
+    "2011_B_combinatorics": {8: "6"},          # the same problem, B division
+    # "every triple of a perfect square works ... and the largest such under 1000
+    #  is $3 \cdot 18^2$" -- transcribed as "\lfloor \frac{972}{18} \rfloor".
+    "2011_A_number_theory": {2: "972"},
+    # "The fraction $\frac{645}{61}$, already in simplest form, gives sum 706,
+    #  and that is the answer." The statement asks for a + b.
+    "2013_A_combinatorics": {4: "706"},
+    "2013_B_combinatorics": {8: "706"},        # the same problem, B division
+    "2013_A_geometry": {
+        # "thus the sidelength is $\frac{28\sqrt{3}}{3}$", and the statement asks
+        # for a + b + c of a\sqrt{b}/c with (a, c) = 1 and b squarefree.
+        2: "34",
+        # The packet stops after printing
+        # BD=sqrt(((2·5+4·3)(2·4+3·5))/(2·5+4·3)), without a final answer line.
+        # Cancelling gives BD²=23, so the requested 13(BD)² is 299.
+        6: "299",
+    },
+    # "Thus we conclude that it is impossible for $n = 5$." The answer LLM reads
+    # this impossibility argument as having no answer and declines, which would
+    # drop the problem from the key entirely.
+    "2014_A_combinatorics": {1: "5"},
+    "2014_B_combinatorics": {
+        3: "5",                                # the same problem, B division
+        # "we see we can have at most 183 x 5 + 1 = 916 elements in the subset"
+        7: "916",
+    },
+    "2025_A_geometry": {
+        # "$MS = \frac{104}{MI} = \frac{52}{\sqrt{10}} = \left\lceil
+        #  \frac{26\sqrt{10}}{5} \right\rceil$" -- the \lceil...\rceil is OCR
+        # corruption of \boxed{}: a ceiling would not equal 52/\sqrt{10}.
+        7: "\\frac{26\\sqrt{10}}{5}",
+        # "a hemisphere of radius 1 squished by a factor of $\sqrt{2}$, whose
+        #  volume is $\frac{\pi \sqrt{2}}{3}$"
+        8: "\\frac{\\pi \\sqrt{2}}{3}",
+    },
+    "2025_team": {
+        # "Squaring both sides and setting $s = \frac{33 + a}{2}$ yields
+        #  $a = [27]$", and the statement asks for the length of BC (= a).
+        6: "27",
+        # The perimeter of S_3, stated in the solution's closing display.
+        9: "\\frac{4}{3}(\\sqrt{2} + 2\\sqrt{5})",
+    },
+}
+
+# Problems whose OCR does not state the answer at all, so every reader is
+# guessing: publish nothing rather than a guess (the series' standing rule -- a
+# partial key, never a wrong one). Same re-check rule as `_VERIFIED_ANSWERS`; a
+# re-OCR that recovers the missing text should retire the entry.
+_UNRESOLVED_ANSWERS = {
+    # Ends "and thus both of these permutations work, and the answer is" followed
+    # by a glyph -- the value itself did not survive OCR.
+    "2011_B_algebra": {8},
+    # The case analysis is cut off after case 4 and never sums the cases.
+    "2012_A_number_theory": {4},
+}
+
 _2011_TEAM_GRID_ANSWERS = {
     3: "1526",       # 6 Across
     4: "6445",       # 7 Across: gray sum 64, upper-left yellow sum 45
@@ -654,7 +725,8 @@ class PumacSeries(Series):
            heuristic key beats no key.
 
         Problems no reader resolves are omitted (a partial key, never a guessed
-        one).
+        one) -- except for the handful in `_VERIFIED_ANSWERS`, read off the packet
+        by hand and applied last so a re-sweep reproduces them.
         """
         full_text = "\n".join(
             self.clean_solution_markdown(index, markdown)
@@ -690,11 +762,6 @@ class PumacSeries(Series):
             value = _normalize_answer_for_statement(value, statement, block)
             if value and _valid_answer(value):
                 answers[n] = value
-        if test.id == "2013_A_geometry":
-            # The packet stops after printing
-            # BD=sqrt(((2·5+4·3)(2·4+3·5))/(2·5+4·3)), without a final answer
-            # line. Cancelling gives BD²=23, so the requested 13(BD)² is 299.
-            answers[6] = "299"
         flattened = (
             _flatten_crossword_mapping(answers, universe=blocks)
             if _is_crossword_test(test.id)
@@ -704,6 +771,10 @@ class PumacSeries(Series):
             # These clues are deliberately deferred in the prose solutions and
             # supplied only by the packet's final completed Sudoku/crossword.
             flattened.update(_2011_TEAM_GRID_ANSWERS)
+        # Last word, so a re-sweep reproduces the key rather than overwriting it.
+        flattened.update(_VERIFIED_ANSWERS.get(test.id, {}))
+        for number in _UNRESOLVED_ANSWERS.get(test.id, ()):
+            flattened.pop(number, None)
         return flattened
 
 
