@@ -231,9 +231,12 @@ def _parse_one_test(
     series, test, engine, model, threshold, cache=None, layout=None, temperature=None
 ):
     """Render a test to pages and parse them into a merged, post-processed list."""
-    match = series.match_marker()
     with tempfile.TemporaryDirectory(prefix="comp-ocr-") as workdir:
         pages = series.test_pages(test, workdir)
+        # Rendering activates test-scoped series state before hooks are read.
+        # This matters for compendia whose contests share a PDF but use
+        # different marker conventions.
+        match = series.match_marker()
         # Some series choose layout behavior from the active test (PUMaC's
         # directional team rounds are the notable case). Resolve those options
         # only after test_pages has activated the current source.
@@ -609,7 +612,7 @@ def _scrape_solutions(args, series, test, sol, dest, model):
     cache = OCRCache(dest / SOLUTION_CACHE, enabled=args.cache)
     pages_md = None
     with tempfile.TemporaryDirectory(prefix="comp-ocr-sol-") as workdir:
-        pages = series.test_pages(Test(id=test.id, source=sol), workdir)
+        pages = series.solution_pages(test, sol, workdir)
         if args.engine in config.MARKDOWN_ENGINES:
             pages_md, figures = process_solution_document(
                 pages,

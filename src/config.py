@@ -570,6 +570,8 @@ SERIES_DATA_DIRS = {
     "smt": _MATHTESTS_ROOT / "SMT" / "out",
     "bmt": _MATHTESTS_ROOT / "BMT" / "out",
     "omo": _MATHTESTS_ROOT / "OMO" / "out",
+    # NIMO is a compendium PDF stored beside the OMO source PDFs.
+    "nimo": _MATHTESTS_ROOT / "OMO" / "out",
     "farml": _MATHTESTS_ROOT / "FARML" / "out",
     "chmm": _MATHTESTS_ROOT / "CHMM" / "out",
     "cmimc": _MATHTESTS_ROOT / "CMIMC",

@@ -517,6 +517,15 @@ class Series:
         """Return the solution source (PDF/folder) for `test`, or None."""
         return None
 
+    def solution_pages(self, test: Test, source, workdir):
+        """Return the solution page images for ``test`` in reading order.
+
+        The default treats the solution source as a standalone document. A
+        compendium series may override this to render only the page range that
+        belongs to the selected test.
+        """
+        return self.test_pages(Test(id=test.id, source=source), workdir)
+
     def clean_solution_markdown(self, page_index: int, markdown: str) -> str:
         """Per-page cleanup of solution-OCR markdown before problem tagging.
 
@@ -586,6 +595,7 @@ class Series:
             strict_section_restarts=opts.strict_section_restarts,
             consecutive_problem_markers=opts.consecutive_problem_markers,
             page_initial_point_restart=opts.page_initial_point_restart,
+            flat_problem_numbering=opts.flat_problem_numbering,
             backreference_problem_markers=opts.backreference_problem_markers,
             split_glued_bare_markers=opts.split_glued_bare_markers,
         ):

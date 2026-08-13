@@ -8,6 +8,7 @@ from .hmmt import HmmtSeries
 from .mandelbrot import MandelbrotSeries
 from .mathcounts import MathcountsSeries
 from .mpfg import MpfgSeries
+from .nimo import NimoSeries
 from .omo import OmoSeries
 from .pumac import PumacSeries
 from .purplecomet import PurpleCometSeries
@@ -28,6 +29,7 @@ SERIES = {
         BmtSeries(),
         ChmmSeries(),
         CmimcSeries(),
+        NimoSeries(),
         OmoSeries(),
         FarmlSeries(),
     )
