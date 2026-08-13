@@ -22,10 +22,14 @@ from .base import Series, Test, strip_solution_page_furniture
 
 
 _ANSWER_LINE_RE = re.compile(
-    r"^\s*(?:\*{1,2}|#+\s*|\\textbf\{)?\s*Answer[.:]?\s*(.*)$", re.IGNORECASE
+    r"^\s*(?:\*{1,2}|#+\s*|\\textbf\{)?\s*Answer[.:]?"
+    r"\s*(?:\*{1,2}|_+|\})?\s*(.*)$",
+    re.IGNORECASE,
 )
 _SOLUTION_LINE_RE = re.compile(
-    r"^\s*(?:\*{1,2}|#+\s*|\\textbf\{)?\s*Solution[.:]?\s*(.*)$", re.IGNORECASE
+    r"^\s*(?:\*{1,2}|#+\s*|\\textbf\{)?\s*Solution[.:]?"
+    r"\s*(?:\*{1,2}|_+|\})?\s*(.*)$",
+    re.IGNORECASE,
 )
 _THE_ANSWER_IS_RE = re.compile(
     r"\bThe\s+answer\s+is\s+([A-Za-z0-9_/\-+\\.\{\}\(\)]+)", re.IGNORECASE
@@ -205,15 +209,20 @@ def _extract_answer_from_block(block: str) -> str:
         if m:
             val = m.group(1).strip()
             if val and not _PROPOSED_RE.match(val) and not _SOLUTION_LINE_RE.match(val):
-                return val.strip().strip("$").strip().rstrip(".").strip()
+                return _clean_answer_value(val)
             for following in lines[idx + 1 :]:
                 f_str = following.strip()
                 if not f_str:
                     continue
                 if _PROPOSED_RE.match(f_str) or _SOLUTION_LINE_RE.match(f_str):
                     break
-                return f_str.strip().strip("$").strip().rstrip(".").strip()
+                return _clean_answer_value(f_str)
     m2 = _THE_ANSWER_IS_RE.search(block)
     if m2:
-        return m2.group(1).strip().strip("$").strip().rstrip(".").strip()
+        return _clean_answer_value(m2.group(1))
     return _boxed_answer(block)
+
+
+def _clean_answer_value(value: str) -> str:
+    """Remove sentence punctuation while preserving balanced inline math."""
+    return value.strip().rstrip(".").strip()

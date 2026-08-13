@@ -271,6 +271,13 @@ class PumacSeries(Series):
         return super().test_pages(test, workdir)
 
     @override
+    def prepare_cached_statement(self, test):
+        super().prepare_cached_statement(test)
+        self._active_source = Path(test.source)
+        self._active_is_solution = False
+        self._crossword_section = None
+
+    @override
     def skip_page(self, text):
         """Drop instruction-only pages from the four directional team rounds."""
         test_id = getattr(self, "_active_test_id", "")

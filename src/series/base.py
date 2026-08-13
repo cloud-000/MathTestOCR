@@ -7,6 +7,7 @@ pipeline; a series only describes *what* to parse and *how its numbering works*.
 """
 
 import re
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -45,6 +46,50 @@ _SOLUTION_INDEX_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+_ANSWER_PROSE_START_RE = re.compile(
+    r"^(?:the|there|we|let|suppose|consider|since|because|first|using|distribute|"
+    r"instruct|arrange|note\s+that)\b",
+    re.IGNORECASE,
+)
+_ANSWER_FOREIGN_SECTION_RE = re.compile(
+    r"\b(?:solution\s*:|round\s+instructions|math\s+tournament|"
+    r"math\s+competition|official\s+answer\s+booklet)\b",
+    re.IGNORECASE,
+)
+_ANSWER_HEADER_LINE_RE = re.compile(
+    r"^(?:.*\b(?:math\s+tournament|math\s+competition)\b.*|"
+    r"(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+\d{1,2},?\s+20\d{2})$",
+    re.IGNORECASE,
+)
+
+
+def clean_answer_candidates(answers: dict) -> dict:
+    """Reject unmistakable proof, instruction, and header blocks as answers.
+
+    This is intentionally an opt-in final guard for series answer parsers. It
+    does not impose a generic length limit: long tuples, matrices, and symbolic
+    integrals remain valid. Only foreign section labels, or a long/multiline
+    discourse paragraph beginning with an explanatory verb, fail soft.
+    """
+    cleaned = {}
+    for number, value in answers.items():
+        if not isinstance(value, str):
+            continue
+        candidate = value.strip()
+        lines = [line.strip() for line in candidate.splitlines() if line.strip()]
+        if len(lines) > 1 and all(
+            _ANSWER_HEADER_LINE_RE.match(line) for line in lines[1:]
+        ):
+            candidate = lines[0]
+        if not candidate or _ANSWER_FOREIGN_SECTION_RE.search(candidate):
+            continue
+        if (
+            "\n" in candidate or len(candidate) > 120
+        ) and _ANSWER_PROSE_START_RE.match(candidate):
+            continue
+        cleaned[number] = candidate
+    return cleaned
 
 
 
@@ -68,6 +113,57 @@ def strip_solution_page_furniture(markdown: str, *, line_patterns=(), inline_pat
             continue
         kept.append(line)
     return "\n".join(kept).strip()
+
+
+def route_section_preambles(problems, heading_pattern: re.Pattern):
+    """Move text after a structural section heading to the next problem.
+
+    Whole-page OCR emits a section title and its shared definitions before the
+    next printed problem marker.  A last-seen-marker layout parser therefore
+    appends that material to the preceding problem.  Series opt into this helper
+    with a narrowly-scoped heading pattern; the heading itself is discarded and
+    every following element is prepended to the next problem in reading order.
+    The operation is in-place and preserves image/text element ordering.
+    """
+    for index, problem in enumerate(problems):
+        next_problem = problems[index + 1] if index + 1 < len(problems) else None
+        for element_index, element in enumerate(problem.elements):
+            if element.kind != "text" or not element.text:
+                continue
+            match = heading_pattern.search(element.text)
+            if match is None:
+                continue
+
+            prefix = element.text[: match.start()].rstrip()
+            suffix = element.text[match.end() :].strip()
+            original_elements = problem.elements
+            kept = original_elements[:element_index]
+            if prefix:
+                prefix_element = copy(element)
+                prefix_element.text = prefix
+                kept.append(prefix_element)
+            problem.elements = kept
+
+            if next_problem is not None:
+                moved = []
+                if suffix:
+                    suffix_element = copy(element)
+                    suffix_element.text = suffix
+                    moved.append(suffix_element)
+                moved.extend(original_elements[element_index + 1 :])
+                next_problem.elements = moved + next_problem.elements
+            break
+    return problems
+
+
+def strip_section_tail(value, heading_pattern: re.Pattern):
+    """Drop a structural heading and following packet text from a solution."""
+    if isinstance(value, (list, tuple)):
+        return [strip_section_tail(item, heading_pattern) for item in value]
+    if not value:
+        return value
+    match = heading_pattern.search(value)
+    return value[: match.start()].rstrip() if match is not None else value
 
 
 def numbered_answers_in_line(line: str):
@@ -243,6 +339,7 @@ class Series:
     # automatically split a problem's text into [sol1, sol2, ...] when multiple
     # worked solution headers are present in the OCR block.
     split_multiple_solutions: bool = False
+    validate_answer_candidates: bool = False
     solution_header_re: re.Pattern | None = None
     secondary_solution_header_re: re.Pattern | None = None
 
@@ -305,6 +402,16 @@ class Series:
         if src.suffix.lower() == ".pdf":
             return pdf_io.pdf_to_images(src, workdir, skip_page=self.skip_page)
         raise ValueError(f"unsupported test source: {src}")
+
+    def prepare_cached_statement(self, test: Test):
+        """Activate test-scoped hooks before statement cache reconstruction.
+
+        Normal parsing gets this state as a side effect of a series' test-page
+        rendering. Cache-only ``parse --reparse`` deliberately skips rendering,
+        so it calls this lightweight hook first. Most series need only the test
+        id; a layout with additional transient state may override it.
+        """
+        self._active_test_id = test.id
 
     def skip_page(self, text: str) -> bool:
         """Return True to exclude a rendered PDF page from parsing.
@@ -514,6 +621,14 @@ class Series:
         without teaching the shared pipeline any competition-specific prose.
         """
         return solutions
+
+    def postprocess_answers(self, answers: dict, test: Test = None) -> dict:
+        """Final answer-key guard; conservative and opt-in per series."""
+        return (
+            clean_answer_candidates(answers)
+            if self.validate_answer_candidates
+            else answers
+        )
 
     def postprocess_solution_figures(
         self, figures: dict, test: Test = None, full_text: str = ""

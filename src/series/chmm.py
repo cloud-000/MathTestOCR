@@ -20,7 +20,7 @@ from typing_extensions import override
 
 from .. import anchors, config
 from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
-from .base import Series, Test
+from .base import Series, Test, route_section_preambles, strip_section_tail
 from .smt import _boxed_answer
 
 
@@ -31,6 +31,9 @@ _PREFIXED_MARKER_RE = re.compile(r"^\s*(?:IR|MR|TR|TBR)\s*(\d+)\s*[.)]?", re.I)
 _ZERO_SECTION_RE = re.compile(r"^\s*Problem\s+0[.](\d+)\s*[.)]?", re.I)
 # Several solution-only packets use "Solution 1." as the sole block marker.
 _SOLUTION_MARKER_RE = re.compile(r"^\s*Solution\s+(\d+)\s*[.:)]?", re.I)
+_MIXER_PART_BOUNDARY_RE = re.compile(
+    r"(?im)^[ \t]*\*\*[ \t]*Part\s+(?:\d+|[IVXLC]+)[ \t]*\*\*[ \t]*(?:\n|$)"
+)
 _INTEGRAL_MARKER_RE = re.compile(
     r"^\s*(?:\\textbf\{\s*)?Integral\s+(\d+)\b(?:\s+Answer)?\s*\}?", re.I
 )
@@ -110,6 +113,7 @@ class ChmmSeries(Series):
     has_solutions = True
     has_answers = True
     split_multiple_solutions = True
+    validate_answer_candidates = True
 
     ignored_test_substrings = ("math-talk", "tcs")
     proof_test_patterns = (r"^\d{4}_(?:fall|winter|spring|annual)_proof$",)
@@ -199,6 +203,10 @@ class ChmmSeries(Series):
         return markdown
 
     @override
+    def postprocess(self, problems):
+        return route_section_preambles(problems, _MIXER_PART_BOUNDARY_RE)
+
+    @override
     def solution_source(self, test: Test):
         # Finals packets contain question/answer slides, not worked solutions.
         if "integration-bee-finals" in test.id.casefold():
@@ -286,6 +294,13 @@ class ChmmSeries(Series):
             for number in range(13, 17):
                 solutions[number] = shared
         return solutions
+
+    @override
+    def postprocess_solutions(self, solutions, statements, test: Test = None):
+        return {
+            number: strip_section_tail(value, _MIXER_PART_BOUNDARY_RE)
+            for number, value in solutions.items()
+        }
 
     @override
     def parse_answers(self, test: Test, pages_markdown: list) -> dict:

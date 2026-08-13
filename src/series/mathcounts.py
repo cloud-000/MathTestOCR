@@ -182,6 +182,7 @@ class MathcountsSeries(Series):
         False  # shared per-level solutions.pdf deferred -- see module docstring
     )
     has_answers = True
+    validate_answer_candidates = True
     ignored_test_substrings = ("masters", "warmup", "workout")
 
     def layout_options(self):
@@ -302,9 +303,15 @@ class MathcountsSeries(Series):
             for h in all_headers
         ]
 
-        pages = [
-            md for md in pages_markdown if header in re.sub(r"\s+", " ", md).lower()
-        ]
+        pages = []
+        for md in pages_markdown:
+            collapsed = re.sub(r"\s+", " ", md).lower()
+            # Coordinator directions use the same round name ("TEAM ROUND
+            # INSTRUCTIONS") and contain numbered prose that otherwise looks
+            # exactly like answer-key entries.  Only answer-bearing pages enter
+            # the numbered parser.
+            if header in collapsed and f"{header} instructions" not in collapsed:
+                pages.append(md)
         answers = {}
         upper_bound = 80 if test.source.stem in {"countdown", "cdr"} else {
             "sprint": 30,

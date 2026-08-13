@@ -1928,6 +1928,23 @@ def inline_problem_figures(problems, path_prefix=""):
     return problems
 
 
+def inline_existing_problem_figures(problems, figure_names, path_prefix=""):
+    """Reference already-written statement crops during cache-only reparsing.
+
+    ``figure_names`` maps problem number to crop filenames in their numeric
+    order. Unlike :func:`inline_problem_figures`, this path has no PIL crops and
+    never writes or deletes image files; it only replaces cached OCR figure
+    placeholders (or appends missing refs) in reconstructed statement text.
+    """
+    for problem in problems:
+        refs = [f"![]({path_prefix}{name})" for name in figure_names.get(problem.number, ())]
+        statement = _place_figure_refs(problem.text, refs)
+        problem.elements = (
+            [ProblemElement("text", "Text", [], text=statement)] if statement else []
+        )
+    return problems
+
+
 def inline_solution_figures(solutions, figures, path_prefix=""):
     """Place each DETR solution-figure crop inline in its solution text.
 

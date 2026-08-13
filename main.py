@@ -9,6 +9,7 @@ Examples:
     python main.py parse --series usamts --data-dir /path/to/usamts
     python main.py parse --series usamts --data-dir /path/to/usamts --force
     python main.py parse --series mathcounts --test 2025_state_sprint
+    python main.py parse --series hmmt --test 2019_nov_guts --reparse
 
     # Unregistered competition: one PDF/image folder, or a directory of PDFs
     python main.py parse-series custom-name /path/to/source --out out
@@ -30,20 +31,24 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from src import config, output
+from src import config, grouping, output
 from src.annotate import draw_detections
 from src.llama import LlamaClient
 from src.nanonets import NanonetsClient
+from src import nanonets as nanonets_mod
 from src.ocr_cache import PARSE_CACHE, SOLUTION_CACHE, OCRCache
 from src.pdf_io import pdf_to_images
 from src.pipeline import (
     inline_problem_figures,
+    inline_existing_problem_figures,
     inline_solution_figures,
     ocr_pages,
     process_image,
     process_image_markdown,
     process_solution_document,
     process_test,
+    Problem,
+    ProblemElement,
 )
 from src.series import GenericSeries, Test, get_series, series_names
 
@@ -269,6 +274,11 @@ def _run_parse_batch(series, tests, args):
     if not tests:
         return
 
+    if getattr(args, "reparse", False):
+        for test in tests:
+            _reparse_statement_cache(series, test, out_root / test.id)
+        return
+
     model = _open_engine(args.engine, args.llama_tier)
     try:
         for test in tests:
@@ -303,6 +313,100 @@ def _run_parse_batch(series, tests, args):
             )
     finally:
         _close_engine(args.engine, model)
+
+
+def _existing_statement_figures(dest: Path) -> dict[int, list[str]]:
+    """Existing statement crop filenames, grouped and numerically ordered."""
+    figures = {}
+    pattern = re.compile(r"^problem_(\d+)_image_(\d+)\.png$")
+    if not dest.exists():
+        return figures
+    found = []
+    for file in dest.glob("problem_*_image_*.png"):
+        match = pattern.match(file.name)
+        if match is not None:
+            found.append((int(match.group(1)), int(match.group(2)), file.name))
+    for number, _, filename in sorted(found):
+        figures.setdefault(number, []).append(filename)
+    return figures
+
+
+def _reparse_statement_cache(series, test, dest: Path):
+    """Rebuild statement JSON from cached whole-page OCR without models/DETR."""
+    cache_path = dest / PARSE_CACHE
+    if not cache_path.exists():
+        log(f"[{series.name}] skip {test.id} (no {PARSE_CACHE} found to reparse)")
+        return
+    try:
+        cache_data = json.loads(cache_path.read_text())
+    except (OSError, ValueError) as exc:
+        log(f"[{series.name}] skip {test.id} (invalid {PARSE_CACHE}: {exc})")
+        return
+    pages_md = list(cache_data.values())
+    if not pages_md:
+        log(f"[{series.name}] skip {test.id} (empty {PARSE_CACHE})")
+        return
+
+    series.prepare_cached_statement(test)
+    layout = series.layout_options()
+    match_marker = series.match_marker()
+    merged = {}
+    carry = None
+    for page_index, raw_markdown in enumerate(pages_md):
+        markdown = series.clean_statement_markdown(page_index, raw_markdown)
+        if raw_markdown.strip() and not markdown.strip():
+            continue
+        items = nanonets_mod.parse_layout(
+            markdown,
+            match_marker,
+            split_marker_table_rows=layout.split_marker_table_rows,
+            start_problem=carry,
+            ordered_list_markers=layout.ordered_list_markers,
+            point_value_list_markers=layout.point_value_list_markers,
+            point_value_marker_consistency=layout.point_value_marker_consistency,
+            heading_problem_markers=layout.heading_problem_markers,
+            strict_section_restarts=layout.strict_section_restarts,
+            consecutive_problem_markers=layout.consecutive_problem_markers,
+            page_initial_point_restart=layout.page_initial_point_restart,
+            flat_problem_numbering=layout.flat_problem_numbering,
+            backreference_problem_markers=layout.backreference_problem_markers,
+            split_glued_bare_markers=layout.split_glued_bare_markers,
+        )
+        page_numbers = [item["problem"] for item in items if item["problem"] is not None]
+        if page_numbers:
+            page_max = max(page_numbers)
+            carry = page_max if carry is None else max(carry, page_max)
+        for item in items:
+            number = item["problem"]
+            if number is None:
+                continue
+            problem = merged.setdefault(number, Problem(number=number))
+            if item["kind"] == "text":
+                text = "\n".join(
+                    line
+                    for line in item["text"].splitlines()
+                    if not grouping.is_footer_text(line)
+                ).strip()
+                if text:
+                    problem.elements.append(ProblemElement("text", "Text", [], text=text))
+            elif item["kind"] == "image" and layout.inline_figures:
+                problem.elements.append(
+                    ProblemElement("text", "Figure", [], text=nanonets_mod.FIGURE_PLACEHOLDER)
+                )
+
+    problems = series.postprocess([merged[number] for number in sorted(merged)])
+    inline_existing_problem_figures(
+        problems,
+        _existing_statement_figures(dest),
+        f"{series.name}/{test.id}/",
+    )
+    count = output.write_problem_texts(problems, dest)
+    coverage = output.write_problem_coverage(series.coverage_exceptions(test.id), dest)
+    output.write_test_profile(series.proof_profile(test), dest)
+    log(
+        f"[{series.name}] wrote {count} problem(s), {coverage} coverage exception(s) "
+        f"from cache -> {dest}"
+    )
 
 
 def cmd_parse_series(args):
@@ -368,6 +472,8 @@ def cmd_parse(args):
     if args.series:
         _cmd_parse_batch(args)
     elif args.image:
+        if getattr(args, "reparse", False):
+            raise SystemExit("--reparse requires --series and an existing per-test OCR cache")
         _cmd_parse_single(args)
     else:
         raise SystemExit("provide an image path, or --series for batch parsing")
@@ -605,6 +711,7 @@ def _scrape_answers(args, series, test, dest, model, out_root, data_dir, sol, so
                 pages = series.test_pages(Test(id=test.id, source=src), workdir)
                 pages_md = ocr_pages(pages, model, cache=cache, layout=_resolve_layout(series, args))
         answers = series.parse_answers(test, pages_md)
+    answers = series.postprocess_answers(answers, test=test)
     if not answers:
         # A forced refresh is authoritative. Do not leave a stale partial key
         # behind when the current parser correctly finds that a proof round (or
@@ -790,6 +897,11 @@ def main():
     )
     p_parse.add_argument(
         "--force", action="store_true", help="re-parse tests even if already present"
+    )
+    p_parse.add_argument(
+        "--reparse",
+        action="store_true",
+        help="rebuild problems.json from ocr_cache.json without OCR, DETR, or rendering pages",
     )
     p_parse.add_argument(
         "--existing",

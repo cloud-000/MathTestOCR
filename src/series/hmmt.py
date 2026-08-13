@@ -23,7 +23,14 @@ from typing_extensions import override
 
 from .. import anchors, answer_llm, config
 from ..nanonets import FIGURE_PLACEHOLDER, parse_layout
-from .base import CoverageException, Series, Test, strip_solution_page_furniture
+from .base import (
+    CoverageException,
+    Series,
+    Test,
+    route_section_preambles,
+    strip_section_tail,
+    strip_solution_page_furniture,
+)
 
 
 _ANSWER_RE = re.compile(
@@ -180,6 +187,28 @@ _HMMT_GLUED_POINT_MARKER_RE = re.compile(
 # total is unambiguous and lets strict numbering accept the following restart.
 _HMMT_POINT_SECTION_TITLE_RE = re.compile(
     r"(?m)^(?P<title>\s*[A-Z][^\n]{0,100}?\s+\[\d+\])\s*$"
+)
+_HMMT_PLAIN_SECTION_TITLES = (
+    "Permutations",
+    "Circumcircles",
+    "Power of a Point",
+    "Periodicity",
+    "Glossary and some possibly useful facts",
+    "Parabolas",
+    "Super Mario 64!",
+    "Enumeration",
+    "Rock-paper-scissors",
+    "Bases",
+    "Five Guys",
+    "Circles in Circles",
+)
+_HMMT_SECTION_BOUNDARY_RE = re.compile(
+    r"(?im)^[ \t]*(?:\*\*[ \t]*|#{1,6}[ \t]+)(?:"
+    r"[^\n]{1,100}\[\s*\d+\s*\]"
+    r"|Round\s+\d+"
+    r"|Part\s+(?:\d+|[IVXLC]+)(?:\s*[-—:].*)?"
+    r"|" + "|".join(re.escape(title) for title in _HMMT_PLAIN_SECTION_TITLES) +
+    r")[ \t]*(?:\*\*)?[ \t]*(?:\n|$)"
 )
 # Solution-page completeness floor (see validate_solution_markdown). Pages whose
 # text layer is thinner than this are answer grids and colour keys, whose sparse
@@ -533,7 +562,7 @@ class HmmtSeries(Series):
                         continue
                 kept.append(element)
             problem.elements = kept
-        return problems
+        return route_section_preambles(problems, _HMMT_SECTION_BOUNDARY_RE)
 
     @override
     def solution_source(self, test):
@@ -628,7 +657,8 @@ class HmmtSeries(Series):
         cleaned = {}
         for number, value in solutions.items():
             statement = statements.get(str(number), "")
-            cleaned[number] = _strip_restatement(value, statement)
+            value = _strip_restatement(value, statement)
+            cleaned[number] = strip_section_tail(value, _HMMT_SECTION_BOUNDARY_RE)
         return cleaned
 
 

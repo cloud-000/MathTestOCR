@@ -106,6 +106,13 @@ _POINT_VALUE_RE = re.compile(
     r"^(?:<(?:strong|b|em)\b[^>]*>\s*)?\[\s*(?:±\s*)?\d+\s*\]",
     re.IGNORECASE,
 )
+# Cleanup accepts the older prose form (``[7 points]``) too.  It is deliberately
+# separate from _POINT_VALUE_RE: only the compact numeric form is strong enough
+# to drive problem-number consistency, while both forms may carry a Markdown
+# closer orphaned when an emphasized marker is removed.
+_MARKER_POINT_PREFIX_RE = re.compile(
+    r"^\[\s*(?:±\s*)?\d+(?:\s+points?)?\s*\]", re.IGNORECASE
+)
 # The unit that labels an answer blank, once the blank rule itself is gone:
 # a leading run of currency signs / short lowercase-or-number tokens up to
 # where the real statement starts (a capital letter, an opening paren, or the
@@ -776,6 +783,15 @@ def parse_layout(
             marker_tail = (
                 probe[match[1] :].lstrip("*_ ") if match is not None else ""
             )
+            # ``27. **[13]** statement`` is a common OCR rendering. Removing
+            # the marker opener exposes ``[13]**``; drop only the closer after
+            # that recognized point prefix, preserving emphasis everywhere in
+            # the actual statement.
+            point_prefix = _MARKER_POINT_PREFIX_RE.match(marker_tail)
+            if point_prefix is not None:
+                point = marker_tail[: point_prefix.end()].rstrip()
+                remainder = marker_tail[point_prefix.end() :].lstrip("*_ ")
+                marker_tail = f"{point} {remainder}" if remainder else point
             # A standalone answer line is furniture, including ``1. ____``.
             # Test this *before* check_marker: raw problem 1 is otherwise
             # interpreted as a permissive section restart and shifts every

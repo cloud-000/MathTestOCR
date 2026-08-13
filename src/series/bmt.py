@@ -175,6 +175,7 @@ class BmtSeries(Series):
     name = "bmt"
     has_solutions = True
     has_answers = True
+    validate_answer_candidates = True
     split_multiple_solutions = True
 
 
@@ -541,7 +542,13 @@ def _answer_value(block: str) -> str:
         match = _ANSWER_RE.match(line)
         if match is None:
             continue
-        inline = _clean_answer(match.group(1))
+        inline_text = re.split(
+            r"\s+(?=(?:[*_#]{0,3}\s*)?Solution\b)",
+            match.group(1),
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        inline = _clean_answer(inline_text)
         if inline:
             return inline
         # Value carried onto the following non-blank line, before any label.

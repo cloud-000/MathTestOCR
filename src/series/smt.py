@@ -139,6 +139,7 @@ class SmtSeries(Series):
     has_solutions = True
     has_answers = True
     split_multiple_solutions = True
+    validate_answer_candidates = True
 
 
     @override
@@ -481,12 +482,29 @@ def _clean_answer(value: str):
     return value or None
 
 
+def _clean_explicit_answer(value: str):
+    """Keep the printed value, not proof/header text flattened below it."""
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    if not lines:
+        return None
+    first = lines[0]
+    # Preserve a genuinely multiline display value through its closing fence.
+    if first.startswith("$$") and first.count("$$") < 2:
+        kept = [first]
+        for line in lines[1:]:
+            kept.append(line)
+            if "$$" in line:
+                break
+        first = "\n".join(kept)
+    return _clean_answer(first)
+
+
 def _answer_value(block: str):
     """Prefer SMT's explicit ``Answer:`` label, falling back to a final box."""
     # A display answer is commonly placed on the line *after* ``Answer:``;
     # line-by-line parsing sees the label but an empty value in that layout.
     for match in _ANSWER_BLOCK_RE.finditer(block):
-        if value := _clean_answer(match.group(1)):
+        if value := _clean_explicit_answer(match.group(1)):
             return value
     for line in block.splitlines():
         match = _ANSWER_RE.match(line)
