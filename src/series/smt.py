@@ -38,15 +38,19 @@ _SOLUTION_RE = re.compile(
     rf"^\s*{_EMPH}\s*Solution(?:\s+\d+)?\b\s*{_EMPH}\s*:?\s*(.*)$", re.IGNORECASE
 )
 _ANSWER_RE = re.compile(
-    rf"^\s*{_EMPH}\s*(?:Answer|Ans)\b\s*{_EMPH}\s*:?\s*(.*)$", re.IGNORECASE
+    rf"^\s*{_EMPH}\s*(?:Answer|Ans)\b\s*{_EMPH}\s*:\s*(.*)$", re.IGNORECASE
 )
+# A mid-line label is only a label when it is punctuated like one: require the
+# colon, and require it to open a clause rather than sit inside one, so prose
+# ("the answer is 0 whenever ...", "the answer is thus $100D/D = 100$") is left
+# to the boxed-value / answer-LLM fallbacks instead of being captured verbatim.
 _INLINE_ANSWER_RE = re.compile(
-    r"(?:\*{0,2}\s*)?(?:Answer|Ans)\b\s*(?:\*{0,2}\s*)?:?\s*"
-    r"(.*?)(?=(?:\*{0,2}\s*)?Solution\b|$)",
+    rf"(?:^|(?<=[^A-Za-z\s]))\s*{_EMPH}\s*(?:Answer|Ans)\b\s*{_EMPH}\s*:\s*"
+    rf"(.*?)(?=\s*{_EMPH}\s*Solution\b|$)",
     re.IGNORECASE,
 )
 _ANSWER_BLOCK_RE = re.compile(
-    rf"^\s*{_EMPH}\s*(?:Answer|Ans)\b\s*{_EMPH}\s*:?\s*"
+    rf"^\s*{_EMPH}\s*(?:Answer|Ans)\b\s*{_EMPH}\s*:\s*"
     rf"(.*?)(?=^\s*{_EMPH}\s*Solution(?:\s+\d+)?\b|\Z)",
     re.IGNORECASE | re.MULTILINE | re.DOTALL,
 )
@@ -500,7 +504,13 @@ def _clean_explicit_answer(value: str):
 
 
 def _answer_value(block: str):
-    """Prefer SMT's explicit ``Answer:`` label, falling back to a final box."""
+    """Prefer SMT's explicit ``Answer:`` label, falling back to a final box.
+
+    Every label pattern requires the printed colon, so prose that merely uses
+    the word ("The answer is thus ...") and code that assigns it (``answer =
+    0`` in an estimation round's listing) fall through to the boxed value --
+    and, failing that, to the answer LLM -- instead of being read as a label.
+    """
     # A display answer is commonly placed on the line *after* ``Answer:``;
     # line-by-line parsing sees the label but an empty value in that layout.
     for match in _ANSWER_BLOCK_RE.finditer(block):

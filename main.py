@@ -574,6 +574,10 @@ def _scrape_solutions(args, series, test, sol, dest, model):
             log(f"[{series.name}] skip {test.id} (no {SOLUTION_CACHE} found to reparse)")
             return None
         log(f"[{series.name}] reparsing solutions from cache for {test.id} ...")
+        # Rendering is skipped here, so activate the test-scoped hooks it would
+        # otherwise have set: a series whose numbering rules are keyed to the
+        # test id must segment this cache exactly as the run that wrote it did.
+        series.prepare_cached_solutions(test, sol)
         cache_data = json.loads(cache_path.read_text())
         pages_md = [
             cache_data[f"page_{i}.png"]

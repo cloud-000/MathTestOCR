@@ -278,6 +278,19 @@ class PumacSeries(Series):
         self._crossword_section = None
 
     @override
+    def prepare_cached_solutions(self, test, source):
+        """Mirror `test_pages`' solution-side state for a cache-only rebuild.
+
+        `skip_page` and the crossword section tracking behave differently for a
+        solution document than for a test paper, so the flags must say which one
+        is active even when no page was rendered.
+        """
+        super().prepare_cached_solutions(test, source)
+        self._active_source = Path(source)
+        self._active_is_solution = True
+        self._crossword_section = None
+
+    @override
     def skip_page(self, text):
         """Drop instruction-only pages from the four directional team rounds."""
         test_id = getattr(self, "_active_test_id", "")

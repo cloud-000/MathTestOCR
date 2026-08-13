@@ -413,6 +413,19 @@ class Series:
         """
         self._active_test_id = test.id
 
+    def prepare_cached_solutions(self, test: Test, source):
+        """Activate test-scoped hooks before solution cache reconstruction.
+
+        The solution-side counterpart of `prepare_cached_statement`, called by
+        ``solutions --reparse``. Without it a cache-only rebuild silently parses
+        with every test-scoped hook inert -- a round whose numbering rules are
+        keyed to its test id would be segmented by the series' generic rules
+        instead, so the same cache would yield different problems than the run
+        that wrote it. `source` is the solution document being reparsed, for a
+        series that keys transient state to the active file.
+        """
+        self._active_test_id = test.id
+
     def skip_page(self, text: str) -> bool:
         """Return True to exclude a rendered PDF page from parsing.
 

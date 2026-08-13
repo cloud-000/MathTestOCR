@@ -230,6 +230,21 @@ class BmtSeries(Series):
         self._solution_round_offsets = self._source_solution_round_offsets(test)
         return super().test_pages(test, workdir)
 
+    @override
+    def prepare_cached_solutions(self, test: Test, source):
+        """Rebuild the numbering state `test_pages` derives while rendering.
+
+        The tournament packet restarts its printed numbering once per round, and
+        the map from those local numbers onto global question keys is read from
+        the source PDF's text layer -- no OCR involved, so a cache-only rebuild
+        must recompute it. Without it every round's ``1.`` collides into one key
+        and the packet segments into ten blocks instead of forty-two.
+        """
+        super().prepare_cached_solutions(test, source)
+        solution_test = Test(id=test.id, source=source)
+        self._page_offsets = self._source_page_offsets(solution_test)
+        self._solution_round_offsets = self._source_solution_round_offsets(solution_test)
+
     def _source_solution_round_offsets(self, test: Test):
         """Map each 2012 solution page's local rounds to global question keys.
 
@@ -469,13 +484,42 @@ class BmtSeries(Series):
                 return answers
             answers = {}
 
-        # 2. Problem blocks.  Do not let a numbered proof step create an answer
+        # 2. Line-by-line numbered lists (standalone answer key documents).
+        # This runs *before* per-block parsing, and on the same terms as the
+        # table above: a document that identifies itself as an answer key and
+        # yields a dense numbered list is a key, and its own transcription is
+        # authoritative. Parsing blocks first would populate `answers` from
+        # one-token "blocks" (each being a bare answer, with no prose to read),
+        # and every value written there -- including a text model's mangled
+        # reading of ``$\sqrt{3}$`` as ``3`` -- would suppress this branch.
+        key_answers = {}
+        if "answer key" in full_text.casefold():
+            for line in full_text.splitlines():
+                leading, pairs = numbered_answers_in_line(line)
+                for num, ans_str in pairs:
+                    clean_ans = _clean_answer(ans_str)
+                    if clean_ans:
+                        key_answers[num] = clean_ans
+            if len(key_answers) >= 5:
+                return key_answers
+
+        # 3. Problem blocks.  Do not let a numbered proof step create an answer
         # key entry (notably BMT 2019 Discrete and the individual tiebreaker).
         blocks = _solution_blocks(
             full_text,
             self.match_marker(),
             strictly_increasing=getattr(self, "_active_test_id", "")
             in _STRICTLY_INCREASING_SOLUTION_MARKER_TESTS,
+        )
+        # The 2012 tournament solution packet predates explicit Answer lines.
+        # Its source PDF has a complete statement layer, so the optional text
+        # extractor can receive both the exact prompt and that question's worked
+        # solution -- a strictly better context than the solution alone, so it is
+        # built up front rather than in a second pass behind the plain fallback.
+        statements = (
+            _tournament_statement_blocks(test)
+            if test.id == "bmt_2012_tournament"
+            else {}
         )
         for number, parts in blocks.items():
             block = "\n".join(parts)
@@ -487,53 +531,33 @@ class BmtSeries(Series):
                     answers[number] = answer
                 continue
 
+            statement = statements.get(number, "")
+            # Question 22 explicitly asks for S_1 / S.  Its source solution
+            # derives 1 / (k^2 + (k - 1)^2), with k = 42; preserve that exact
+            # symbolic conclusion rather than letting prose extraction confuse
+            # the area symbol S for the answer.
+            if number == 22 and re.search(r"k\s*=\s*42", statement) and re.search(
+                r"1\s*\}\s*\{k\^2\s*\+\s*\(k-1\)\^2", block
+            ):
+                answers[number] = "1/3445"
+                continue
+
             # Older BMT packets often work through a solution and state its
             # result only in prose, without an Answer label or a boxed final
             # value. Let the local text model extract only these unresolved
             # blocks; failures are intentionally soft and leave the key partial.
-            answer = answer_llm.extract(block)
+            answer = answer_llm.extract(
+                f"Statement:\n{statement}\n\nSolution:\n{block}"
+                if statement
+                else block
+            )
             if answer:
                 answers[number] = _clean_answer(answer)
 
-        # The 2012 tournament solution packet predates explicit Answer lines.
-        # Its source PDF has a complete statement layer, so the optional text
-        # extractor receives both the exact prompt and that question's worked
-        # solution.  Keep deterministic values above; this is a fail-soft
-        # supplement, never a replacement for them.
-        if test.id == "bmt_2012_tournament":
-            statements = _tournament_statement_blocks(test)
-            for number, parts in blocks.items():
-                if number in answers:
-                    continue
-                solution = "\n".join(parts).strip()
-                statement = statements.get(number, "")
-                # Question 22 explicitly asks for S_1 / S.  Its source
-                # solution derives 1 / (k^2 + (k - 1)^2), with k = 42;
-                # preserve that exact symbolic conclusion rather than letting
-                # prose extraction confuse the area symbol S for the answer.
-                if number == 22 and re.search(r"k\s*=\s*42", statement) and re.search(
-                    r"1\s*\}\s*\{k\^2\s*\+\s*\(k-1\)\^2", solution
-                ):
-                    answers[number] = "1/3445"
-                    continue
-                answer = answer_llm.extract(
-                    f"Statement:\n{statement}\n\nSolution:\n{solution}"
-                    if statement
-                    else solution
-                )
-                if answer:
-                    answers[number] = _clean_answer(answer)
-
-        # 3. Line-by-line numbered lists (standalone answer key documents)
-        if not answers and "answer key" in full_text.casefold():
-            for line in full_text.splitlines():
-                leading, pairs = numbered_answers_in_line(line)
-                for num, ans_str in pairs:
-                    clean_ans = _clean_answer(ans_str)
-                    if clean_ans:
-                        answers[num] = clean_ans
-
-        return answers
+        # Below that threshold the list is not established as a key -- a numbered
+        # line inside a worked solution parses the same way -- so it stays what it
+        # has always been here: a last resort when block parsing found nothing.
+        return answers or key_answers
 
 
 def _answer_value(block: str) -> str:
