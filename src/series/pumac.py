@@ -109,6 +109,17 @@ _RESOLUTION_LABEL_RE = re.compile(
 # Modern "**Answer:** X" line (emphasis optional): the value is the rest of the
 # line, itself possibly a boxed/tagged span cleaned by _clean_value.
 _ANSWER_LABEL_RE = re.compile(r"(?im)^\s*[*_#]{0,3}\s*Answer\b\s*[*_]{0,3}\s*[:.]\s*(.+?)\s*$")
+# The 2010 geometry packets print the key as its own bracketed row above the
+# worked solution -- "[**Answer**] 793", "[Answer] 80" -- with no colon. The
+# brackets are what identify the label, so the punctuation is optional here
+# (unlike _ANSWER_LABEL_RE, where dropping it would match prose). This row is a
+# printed key and outranks anything derived from the solution's prose: without
+# it, #2 of 2010_A_geometry reads as 26 (the total length in its own solution)
+# where the packet prints 793 (the requested abc/4).
+_BRACKET_ANSWER_RE = re.compile(
+    r"(?im)^\s*[>#]{0,3}\s*[*_]{0,3}\s*\[\s*[*_]{0,3}\s*Answers?\s*[*_]{0,3}\s*\]"
+    r"\s*[*_]{0,3}\s*[:.]?\s*(.+?)\s*$"
+)
 # Older "(ANS: X ... CB: names)" credit tag: capture up to a "CB:" author list or
 # the closing paren, then take only a clean leading value (_ANS_VALUE_RE); when
 # the tag holds prose instead ("(ANS: Let s_n be ...)") the value match fails and
@@ -132,6 +143,13 @@ _ANS_VALUE_RE = re.compile(
 _SOLUTION_ANSWER_RE = re.compile(
     r"(?im)^[^\S\r\n]*[*_#>]*[^\S\r\n]*Solution\b"
     r"[*_]*[^\S\r\n]*[.:][*_]*[^\S\r\n]*(.+)$"
+)
+# A bare answer value: an integer/decimal, a simple fraction, or a numeric
+# \frac. Used to tell an opener that states its answer from one that opens with
+# algebra (see _states_a_value); deliberately excludes anything with a variable
+# or an exponent, which is work rather than a result.
+_NUMERIC_VALUE_RE = re.compile(
+    r"-?\d+(?:\.\d+)?(?:\s*/\s*\d+)?%?|\\d?frac\s*{\s*-?\d+\s*}\s*{\s*\d+\s*}"
 )
 # OCR sometimes renders \boxed{X} as a <box>X</box> tag; both are answer boxes.
 _BOX_TAG_RE = re.compile(r"<box>\s*(.*?)\s*</box>", re.I | re.S)
@@ -617,12 +635,26 @@ class PumacSeries(Series):
         """Read each problem's final answer from the solutions document.
 
         The pages are grouped into per-problem blocks by the same markers the
-        solution/figure passes use, then each block's answer is taken from its
-        printed marker (`_extract_answer`); a block with no recognizable marker
-        -- pre-2010 prose that just states the answer in a sentence, or an
-        "(ANS: ...)" tag whose value is prose -- falls back to the answer LLM.
-        Problems the LLM also can't resolve are omitted (a partial key, never a
-        guessed one).
+        solution/figure passes use, then each block's answer is read in
+        descending order of authority:
+
+        1. `_extract_answer` -- a value the packet *printed* (an "Answer:" row, a
+           ``\\boxed{}``, an "(ANS: ...)" tag). Not a judgement call; always wins.
+        2. `answer_llm.extract` -- reads the answer out of the prose. Pre-2010
+           material, and PUMaC's 2025 geometry, state the answer only in a
+           sentence.
+        3. `_derived_answer` -- a regex heuristic, and the weakest reader: it can
+           only emit a bare integer, and it picks the wrong number in roughly a
+           quarter of the blocks it answers (measured 2026-08-13: on 40 sampled
+           problems where it agrees with the older stored key, six of those keys
+           are wrong and the LLM had them right -- "the answer is 12" read as the
+           statement's ``\\sigma(n) = 28``, a concluding ``0 mod 1000`` read as
+           the ``7`` in ``7^{1000}``). It runs last, as the safety net for a run
+           whose LLM endpoint is down: `answer_llm` fails soft to None, and a
+           heuristic key beats no key.
+
+        Problems no reader resolves are omitted (a partial key, never a guessed
+        one).
         """
         full_text = "\n".join(
             self.clean_solution_markdown(index, markdown)
@@ -645,7 +677,7 @@ class PumacSeries(Series):
         answers: dict[int, str] = {}
         for n, block in blocks.items():
             statement = statements.get(n, "")
-            value = _extract_answer(block) or _derived_answer(statement, block)
+            value = _extract_answer(block)
             if value is None and not _solution_defers_answer(block):
                 context = (
                     f"Statement:\n{statement}\n\nSolution:\n{block}"
@@ -653,6 +685,8 @@ class PumacSeries(Series):
                     else block
                 )
                 value = answer_llm.extract(context)
+            if value is None:
+                value = _derived_answer(statement, block)
             value = _normalize_answer_for_statement(value, statement, block)
             if value and _valid_answer(value):
                 answers[n] = value
@@ -1005,6 +1039,29 @@ def _solution_defers_answer(block):
     )
 
 
+_EQUALITY_RE = re.compile(r"(?:=|\\approx)\s*\$?(-?\d+(?:\.\d+)?)")
+
+
+def _numeric_equalities(block):
+    r"""Matches of "= <number>" that are asserting a value, outermost only.
+
+    A brace group is a subexpression, not a claim: the "=" in ``\sum_{i=0}^{9}``
+    or ``\sum_{k=2}^{9}`` is an index bound, so reading the last equality in
+    "The answer is $2 \cdot 10 \cdot \sum_{i=0}^{9} i$ ..., which is 900" as the
+    answer yields 0. Relations that merely *compare* (``\neq``, ``\geq``, ``≤``)
+    are excluded for the same reason -- they state no value.
+    """
+    out = []
+    for match in _EQUALITY_RE.finditer(block):
+        prefix = block[:match.start()]
+        if prefix.count("{") > prefix.count("}"):
+            continue                      # inside a subscript/superscript group
+        if re.search(r"(?:\\(?:n|g|l)e(?:q)?|\\equiv|[<>!≠≥≤])\s*$", prefix):
+            continue
+        out.append(match)
+    return out
+
+
 def _derived_answer(statement, block):
     """Extract a clearly stated final value from informal crossword solutions."""
     # Several early team packets omit an Answer/Solution label but end by
@@ -1037,9 +1094,7 @@ def _derived_answer(statement, block):
             (match.start(), match.group(1))
             for match in re.finditer(pattern, block)
         )
-    equalities = list(
-        re.finditer(r"(?:=|\\approx)\s*\$?(-?\d+(?:\.\d+)?)", block)
-    )
+    equalities = _numeric_equalities(block)
     if not candidates:
         return equalities[-1].group(1) if equalities else None
     high_position, high_value = max(candidates)
@@ -1146,11 +1201,12 @@ def _extract_answer(block: str):
     opener. Returns None when no marker yields a value, leaving the block for the
     LLM fallback. See the module docstring.
     """
-    m = _ANSWER_LABEL_RE.search(block)
-    if m:
-        value = _clean_value(m.group(1))
-        if value:
-            return value
+    for pattern in (_ANSWER_LABEL_RE, _BRACKET_ANSWER_RE):
+        m = pattern.search(block)
+        if m:
+            value = _clean_value(m.group(1))
+            if value:
+                return value
     payload = _ans_payload(block)
     if payload is not None:
         value = _leading_value(payload)
@@ -1166,10 +1222,6 @@ def _extract_answer(block: str):
     m = _ANS_PAREN_RE.search(block)
     if m:
         value = _leading_value(m.group(1))
-        if value:
-            return value
-    for m in _SOLUTION_ANSWER_RE.finditer(block):
-        value = _leading_value(m.group(1).lstrip("*_ "))
         if value:
             return value
     bracketed = re.findall(
@@ -1189,7 +1241,41 @@ def _extract_answer(block: str):
         # Worked solutions frequently box an intermediate quantity before the
         # requested transformed value. The final distinct box is authoritative.
         return boxes[-1]
+    # Last: the 2009/2010 opener, which reads the solution's first token as the
+    # answer. It is the weakest marker -- a box is an explicit answer, while this
+    # is a bet on where the solution starts -- so it runs after the boxes, as the
+    # docstring above says.
+    for m in _SOLUTION_ANSWER_RE.finditer(block):
+        raw = m.group(1).lstrip("*_ ")
+        span = _ANS_VALUE_RE.match(raw)
+        if span is None:
+            continue
+        # The rule's premise is that the answer comes first and prose follows, so
+        # the value has to *end* where it matched. "2025 = 3^45^2, so the sum of
+        # divisors ..." continues into an exponent: the match clipped an
+        # expression ("2025 = 3") instead of reading a value.
+        if re.match(r"[\^_{\\\d]", raw[span.end():]):
+            continue
+        value = _clean_value(span.group(1))
+        if value and _states_a_value(value):
+            return value
     return None
+
+
+def _states_a_value(value: str) -> bool:
+    r"""True unless an opener's value is the solution's first step of work.
+
+    An opener may legitimately equate: "$x = 14, y = 20$" and "$\frac{M}{m} =
+    511$" both name answers, and `_normalize_answer_for_statement` reduces them
+    against the statement. But "$144_b = b^2 + 4b + 4 = (b + 2)^2$" and "2025 =
+    3^45^2" open by *deriving*, and reading them as answers both loses the box
+    printed further down and yields a mangled value. What separates the two is
+    the side the equation lands on: a value, or more algebra.
+    """
+    if "=" not in value:
+        return True
+    rhs = value.rsplit("=", 1)[1].strip().strip("$").strip(" .,;")
+    return bool(_NUMERIC_VALUE_RE.fullmatch(rhs))
 
 
 def _ans_payload(block: str):

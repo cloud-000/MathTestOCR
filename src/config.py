@@ -1,5 +1,6 @@
 """Central configuration. No more hardcoded paths scattered across modules."""
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -188,8 +189,12 @@ LLAMA_PROMPT = (
 # entirely (unmarked problems are then simply omitted from the key, never
 # guessed).
 ANSWER_LLM_ENABLED = True
-ANSWER_LLM_BASE_URL = NANONETS_BASE_URL
-ANSWER_LLM_MODEL = None  # None -> the first model the endpoint serves
+# Both are overridable from the environment (or .env) so a run can be pointed at
+# a stronger chat model without editing this file -- the OCR VLM is a weak prose
+# extractor, and swapping it is a config change by design:
+#   ANSWER_LLM_BASE_URL=http://127.0.0.1:8090/v1 $PY main.py solutions --series pumac ...
+ANSWER_LLM_BASE_URL = os.environ.get("ANSWER_LLM_BASE_URL") or NANONETS_BASE_URL
+ANSWER_LLM_MODEL = os.environ.get("ANSWER_LLM_MODEL") or None  # None -> first served
 ANSWER_LLM_TEMPERATURE = 0.0  # greedy: a fixed input should extract a fixed answer
 ANSWER_LLM_MAX_TOKENS = 64  # an answer is short; a longer reply is prose, not an answer
 ANSWER_LLM_PROMPT = (
